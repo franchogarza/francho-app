@@ -89,7 +89,7 @@ async function subir() {
   const filas = P.map(k => ({ alumno: nube.user.id, clave: k, valor: JSON.parse(lsGet(k) || 'null'), actualizado: new Date(tsDe(k) || Date.now()).toISOString() }));
   nube.estado = 'subiendo'; pintarNube();
   const { error } = await sb.from('registro').upsert(filas, { onConflict: 'alumno,clave' });
-  if (error) { nube.estado = 'error'; nube.err = error.message; pintarNube(); return; }
+  if (error) { nube.estado = 'error'; nube.err = error.message; pintarNube(); clearTimeout(flushT); flushT = setTimeout(subir, 30000); return; }
   const enviados = new Map(filas.map(f => [f.clave, f.actualizado]));
   lsSet('_pend', JSON.stringify(pendientes().filter(k => enviados.get(k) !== new Date(tsDe(k) || 0).toISOString())));
   nube.estado = pendientes().length ? 'subiendo' : 'ok'; nube.ultima = new Date(); pintarNube();
@@ -115,8 +115,12 @@ async function bajar() {
     if (cambios && !st.sheet) render();
     await subir();
     nube.estado = pendientes().length ? 'subiendo' : 'ok';
-  } catch (e) { nube.estado = 'error'; nube.err = e.message || String(e); }
+  } catch (e) { nube.estado = 'error'; nube.err = e.message || String(e); clearTimeout(flushT); flushT = setTimeout(bajar, 30000); }
   nube.ocupado = false; pintarNube();
+}
+function borrarLocales() { // otra cuenta en este móvil: no mezclar datos
+  try { const ks = []; for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && k.startsWith('fs:') && k !== 'fs:tab' && k !== 'fs:estilo') ks.push(k); } ks.forEach(k => localStorage.removeItem(k)); } catch (e) {}
+  Object.keys(mem).forEach(k => delete mem[k]);
 }
 function pintarNube() { const el = document.getElementById('nube-estado'); if (el) el.innerHTML = textoNube(); }
 function textoNube() {
@@ -127,9 +131,16 @@ function textoNube() {
 }
 if (sb) {
   sb.auth.onAuthStateChange((ev, ses) => { const u = ses ? ses.user : null; const cambio = (u && u.id) !== (nube.user && nube.user.id);
-    nube.user = u; if (u) nube.email = u.email; if (cambio) { if (u) setTimeout(bajar, 0); if (typeof render === 'function' && !st.sheet) setTimeout(render, 0); } });
+    nube.user = u; if (u) nube.email = u.email;
+    if (u) { const due = lsGet('_owner'); if (due && due !== u.id) borrarLocales(); lsSet('_owner', u.id); }
+    if (cambio) { if (u) setTimeout(bajar, 0); if (typeof render === 'function' && !st.sheet) setTimeout(render, 0); } });
   window.addEventListener('online', () => { subir(); });
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') bajar(); });
+}
+{ let hoyAbierto = hoyISO(); // si la app sigue abierta al cambiar de día, Hoy pasa al día nuevo
+  const revisarDia = () => { const h = hoyISO(); if (h !== hoyAbierto) { if (st.fecha === hoyAbierto || st.fecha < h && hoyAbierto < INICIO) { st.fecha = h < INICIO ? INICIO : h; st.entDia = null; if (!st.sheet) render(); } hoyAbierto = h; } };
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') revisarDia(); });
+  setInterval(revisarDia, 60000);
 }
 
 const semanaDef = () => ([
@@ -707,7 +718,7 @@ document.addEventListener('click', (ev) => {
       return; }
     case 'sync': bajar(); return;
     case 'estilo': aplicarEstilo(v); save('estilo', v); break;
-    case 'logout': sb.auth.signOut().then(() => { nube.user = null; render(); }); return;
+    case 'logout': subir().finally(() => sb.auth.signOut().then(() => { nube.user = null; borrarLocales(); toast('Sesión cerrada. Tus datos siguen en la nube'); render(); })); return;
   }
   render();
 });
