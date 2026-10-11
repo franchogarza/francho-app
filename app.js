@@ -172,13 +172,42 @@ const setDia = (fecha, fn) => { const d = getDia(fecha); fn(d); Object.keys(d._d
 /* ---------- cálculos ---------- */
 const menuDe = (n) => DATOS.menus.find(m => m.n === n) || DATOS.menus[0];
 const comidaPlan = (dia, mi) => { const c = menuDe(dia.menu).comidas[mi]; const ctx = dia.tipo === 'sin_entreno' ? c.sin : c.entreno; return { c, ctx }; };
+/* ---------- alimentos y líneas de menú (fase 2) ---------- */
+const ALI = Object.fromEntries((window.ALIMENTOS || []).map(a => [a.id, a]));
+const GRUPOS = { prot: 'Proteína', lacteo: 'Lácteos', hc: 'Hidratos', fruta: 'Fruta', grasa: 'Grasas', verdura: 'Verdura' };
+const CLAVE_GRUPO = { prot: 'p', lacteo: 'p', hc: 'c', fruta: 'c', grasa: 'gr', verdura: 'kcal' }; // qué se mantiene al cambiar
+const macA = (id, g) => { const a = ALI[id]; if (!a) return { kcal: 0, p: 0, c: 0, g: 0 }; const f = g / 100; return { kcal: a.kcal * f, p: a.p * f, c: a.c * f, g: a.gr * f }; };
+const sumar = (L) => L.reduce((t, m) => ({ kcal: t.kcal + m.kcal, p: t.p + m.p, c: t.c + m.c, g: t.g + m.g }), { kcal: 0, p: 0, c: 0, g: 0 });
+const nombreCorto = (id) => { const a = ALI[id]; return a ? a.n.split(/[:(]/)[0].trim() : id; };
+const casera = (id, g) => { const a = ALI[id]; if (!a || !a.rac || !a.rac.length) return ''; const [nom, rg] = a.rac[0]; const x = Math.round(g / rg * 4) / 4;
+  const fr = { 0.25: '¼', 0.5: '½', 0.75: '¾' }; const ent = Math.floor(x), dec = x - ent; const txt = (ent || '') + (fr[dec] || '') || '¼';
+  return '≈ ' + txt + ' ' + nom; };
+const EXTRA_PLATO = { 'Lentejas, patata y pavo': [['lentejas', 200]], 'Guiso de pollo y garbanzos': [['garbanzos', 220]] };
+function lineasJesus(menuN, mi, ctxK) { // líneas originales + parte del plato que Jesús no detalla
+  const c = menuDe(menuN).comidas[mi]; const ctx = c[ctxK];
+  const L = []; ctx.items.forEach(t => { const mp = (window.MAPA_MENU || {})[t]; if (mp) mp.forEach(([a, g]) => L.push({ a, g, t })); else L.push({ t, fijo: true }); });
+  (EXTRA_PLATO[c.nombre] || []).forEach(([a, g]) => L.push({ a, g, t: nombreCorto(a) + ' (del plato)' }));
+  const s = sumar(L.filter(l => l.a).map(l => macA(l.a, l.g)));
+  const resto = { kcal: ctx.kcal - s.kcal, p: ctx.p - s.p, c: ctx.c - s.c, g: ctx.g - s.g };
+  return { L, resto };
+}
+const claveMio = (dia, mi) => 'menuMio:' + dia.menu + ':' + MOMENTOS[mi][0] + ':' + (dia.tipo === 'sin_entreno' ? 'sin' : 'entreno');
+function lineasComida(dia, mi) { // lo que toca comer: edición del día > tu versión guardada > Jesús
+  const ctxK = dia.tipo === 'sin_entreno' ? 'sin' : 'entreno'; const base = lineasJesus(dia.menu, mi, ctxK);
+  const reg = dia.comidas[MOMENTOS[mi][0]] || {}; const mio = load(claveMio(dia, mi), null);
+  const L = reg.lineas || mio || base.L;
+  return { L: L.map(l => Object.assign({}, l)), resto: base.resto, base: base.L, editado: !!reg.lineas, mio: !!mio };
+}
+const macrosLineas = (L, resto) => { const s = sumar(L.filter(l => l.a).map(l => macA(l.a, l.g))); return { kcal: s.kcal + resto.kcal, p: s.p + resto.p, c: s.c + resto.c, g: s.g + resto.g }; };
+function equivalentes(id, g) { // misma proteína (o hidratos / grasa según el grupo)
+  const a = ALI[id]; if (!a) return []; const k = CLAVE_GRUPO[a.g]; const obj = a[k] * g / 100;
+  return (window.ALIMENTOS || []).filter(b => b.g === a.g && b.id !== id && b[k] > 0).map(b => { const gn = Math.max(5, Math.round(obj / b[k] * 100 / 5) * 5); return { a: b.id, g: gn, m: macA(b.id, gn) }; });
+}
 const macrosComida = (dia, mi) => {
   const key = MOMENTOS[mi][0]; const reg = dia.comidas[key] || {};
   if (dia.tipo === 'viaje') { const b = Object.assign({}, VIAJE[key]); if (reg.estado === 'fuera') { b.kcal = +reg.kcal || b.kcal; b.p = reg.p !== '' && reg.p != null ? +reg.p : b.p; } return b; }
-  const { ctx } = comidaPlan(dia, mi);
-  const m = { kcal: ctx.kcal, p: ctx.p, c: ctx.c, g: ctx.g };
-  const adj = reg.adj || {};
-  ctx.items.forEach((it, i) => { const r = regla(it); const st = adj[i] || 0; if (r && st) { m.kcal += r.kcal * st; m.p += r.p * st; m.c += r.c * st; m.g += r.g * st; } });
+  const { L, resto } = lineasComida(dia, mi);
+  const m = macrosLineas(L, resto);
   if (reg.estado === 'fuera') { return { kcal: +reg.kcal || m.kcal, p: reg.p !== '' && reg.p != null ? +reg.p : m.p, c: m.c, g: m.g }; }
   return m;
 };
@@ -207,6 +236,29 @@ const habitoHecho = (dia, k) => {
 };
 const diaPlan = (n) => PLAN.find(d => d.n === n) || PLAN[0];
 const ejKey = (d, b, e) => 'D' + d + '-' + b + '-' + e;
+/* ---------- fuerza: historial, mejor marca y 1RM estimado ---------- */
+const kgTxt = (x) => esc(String(x == null ? '' : x).replace('.', ','));
+const numKg = (x) => parseFloat(String(x == null ? '' : x).replace(',', '.'));
+const REPS_SIMPLE = /^\d+(\s*(-|a)\s*\d+)?(\s*(x|por)\s+\w+)?$/i;
+function e1rm(e, i, peso, reps) { // Epley con reps + RIR prescrito; solo series simples (ni drops, ni clusters, ni rest-pause)
+  const s = e.series[i] || e.series[e.series.length - 1]; if (!s || !REPS_SIMPLE.test(s.reps.trim()) || /→|\//.test(s.peso)) return 0;
+  const w = numKg(peso), r = parseFloat(reps); if (!(w > 0 && r > 0)) return 0;
+  const t = r + (parseFloat(s.rir) || 0); return t <= 12 ? w * (1 + t / 30) : 0;
+}
+function historial(key, e, hasta) { // sesiones anteriores a 'hasta' con series hechas de este ejercicio
+  const H = []; for (let f = '2026-09-01'; f < hasta; f = addDays(f, 1)) { const d = load('dia:' + f, null); if (!d) continue;
+    [d.sesion].concat(Object.values(d.sesiones || {})).forEach(se => { if (!se || !se.series || !se.series[key]) return;
+      const sets = se.series[key].map((x, i) => x && x.done ? { peso: x.peso, reps: x.reps, i, rm: e1rm(e, i, x.peso, x.reps) } : null).filter(Boolean);
+      if (sets.length) H.push({ fecha: f, sets, rm: Math.max(0, ...sets.map(x => x.rm)) }); }); }
+  return H;
+}
+function refFuerza(key, e, hasta) {
+  const H = historial(key, e, hasta); if (!H.length) return null;
+  const todas = H.flatMap(h => h.sets.map(x => Object.assign({ fecha: h.fecha }, x)));
+  const mejor = todas.slice().sort((x, y) => (y.rm - x.rm) || (numKg(y.peso) - numKg(x.peso)) || (parseFloat(y.reps) - parseFloat(x.reps)))[0];
+  const rm = Math.max(0, ...H.map(h => h.rm));
+  return { ult: H[H.length - 1], mejor, rm, H };
+}
 const ultimo = (key, antesDe) => { // última vez que se registró este ejercicio
   for (let i = 1; i <= 60; i++) {
     const f = addDays(antesDe, -i); const d = load('dia:' + f, null);
@@ -320,13 +372,18 @@ function vistaComida() {
         <div class="row">${foto}<span class="small grow">${esc(REGLAS_PLATO[k])}</span></div>
         <button class="btn" data-act="abrir-marcar" data-mi="${mi}">${reg.estado ? 'Editar' : 'Marcar'}</button></div>`;
     }
-    const { c, ctx } = comidaPlan(dia, mi); const m = macrosComida(dia, mi); const adj = reg.adj || {};
+    const { c } = comidaPlan(dia, mi); const m = macrosComida(dia, mi); const lc = lineasComida(dia, mi);
+    const mJ = macrosLineas(lc.base, lc.resto); const dP = Math.round(m.p - mJ.p);
     return `<div class="card ${!reg.estado ? '' : ''}">
       <div class="row"><img class="thumb" src="${c.img}" alt="${esc(c.nombre)}">${foto}<div class="grow"><span class="eyebrow">${n} · ${h}</span><h3>${esc(c.nombre)}</h3></div>${est}</div>
-      <div class="list">${ctx.items.map((it, i) => { const r = regla(it); const s = adj[i] || 0;
-        return `<div class="row"><span class="grow small">${esc(it)}</span>${r ? `<span class="delta ${s > 0 ? 'plus' : s < 0 ? 'minus' : ''}">${s ? (s > 0 ? '+' : '−') + Math.abs(s) + ' × ' + esc(r.u) : ''}</span>
-        <span class="stepper"><button data-act="adj" data-mi="${mi}" data-i="${i}" data-v="-1" aria-label="Quitar ${esc(r.u)}">−</button><button data-act="adj" data-mi="${mi}" data-i="${i}" data-v="1" aria-label="Añadir ${esc(r.u)}">+</button></span>` : ''}</div>`; }).join('')}</div>
-      <div class="row between small"><span class="muted">P ${fmt(m.p)} · HC ${fmt(m.c)} · G ${fmt(m.g)} · ${fmt(m.kcal)} kcal</span><button class="btn" data-act="abrir-marcar" data-mi="${mi}">${reg.estado ? 'Editar' : 'Marcar'}</button></div>
+      <div class="list">${lc.L.map((l, i) => { if (!l.a) return `<div class="row"><span class="grow small">${esc(l.t)}</span></div>`;
+        const b = lc.base.find(x => x.t === l.t && x.a === l.a); const igual = b && Math.abs(b.g - l.g) < 0.5;
+        const txt = igual ? l.t : nombreCorto(l.a) + ' · ' + fmt(l.g) + ' g';
+        return `<div class="row"><button class="linea grow" data-act="linea" data-mi="${mi}" data-i="${i}"><span class="small">${esc(txt)}</span>${igual ? '' : `<span class="tiny muted"> ${esc(casera(l.a, l.g))}</span>`}<span class="tiny muted"> · P ${fmt(macA(l.a, l.g).p)}</span></button>
+        <span class="stepper"><button data-act="lin-paso" data-mi="${mi}" data-i="${i}" data-v="-1" aria-label="Menos ${esc(nombreCorto(l.a))}">−</button><button data-act="lin-paso" data-mi="${mi}" data-i="${i}" data-v="1" aria-label="Más ${esc(nombreCorto(l.a))}">+</button></span></div>`; }).join('')}
+        ${lc.resto.kcal > 20 ? `<div class="row"><span class="grow tiny muted">+ verduras y resto del plato · ${fmt(lc.resto.kcal)} kcal</span></div>` : ''}</div>
+      <div class="row wrap" style="gap:6px"><button class="chip" data-act="lin-anadir" data-mi="${mi}">+ Añadir alimento</button>${lc.editado ? `<button class="chip" data-act="lin-guardar" data-mi="${mi}">Guardar como mi menú</button>` : ''}${lc.editado || lc.mio ? `<button class="chip" data-act="lin-reset" data-mi="${mi}">Volver al de Jesús</button>` : ''}</div>
+      <div class="row between small"><span class="muted">P <b style="color:var(--ink)">${fmt(m.p)}</b>${dP ? ` <span class="delta ${dP > 0 ? 'plus' : 'minus'}">${dP > 0 ? '+' : ''}${dP}</span>` : ''} · HC ${fmt(m.c)} · G ${fmt(m.g)} · ${fmt(m.kcal)} kcal</span><button class="btn" data-act="abrir-marcar" data-mi="${mi}">${reg.estado ? 'Editar' : 'Marcar'}</button></div>
     </div>`;
   }).join('');
   return `${cabeceraFecha('Comida')}
@@ -337,7 +394,7 @@ function vistaComida() {
     <span><span class="num" style="font-size:20px;color:${protColor(tot.p)}">${fmt(tot.p)} g</span><br><span class="tiny muted">/ 170 prot.</span></span>
     <span><span class="num" style="font-size:20px">${fmt(tot.c)} g</span><br><span class="tiny muted">${obj.c ? '/ ' + fmt(obj.c) : ''} HC</span></span>
     <span><span class="num" style="font-size:20px">${fmt(tot.g)} g</span><br><span class="tiny muted">${obj.g ? '/ ' + fmt(obj.g) : ''} grasa</span></span>
-  </div><span class="tiny muted">Cuenta lo que has marcado. Ajusta raciones con − / + antes o después de comer.</span></div>
+  </div><span class="tiny muted">Cuenta lo que has marcado. Toca un alimento para cambiarlo: la cantidad se ajusta para mantener la proteína.</span></div>
   ${comidas}
   <div class="card"><span class="eyebrow">Añadir rápido</span><div class="row wrap">${EXTRAS.map(e => `<button class="chip" data-act="extra" data-v="${e.id}">${esc(e.txt)}</button>`).join('')}</div>
     ${(dia.extras || []).length ? `<span class="small muted">Añadido hoy: ${dia.extras.map(id => esc((EXTRAS.find(e => e.id === id) || {}).txt || '')).join(', ')} · <button class="chip" data-act="extra-quitar">Quitar último</button></span>` : ''}</div>
@@ -379,8 +436,9 @@ function hojaEjercicio(bid, en) {
   const b = dp.bloques.find(x => x.id === bid); const e = b.ej.find(x => x.n === en); const key = ejKey(n, bid, en);
   const ses = sesDia(dia, n);
   const reg = (ses && ses.series[key]) || [];
-  const ult = ultimo(key, st.fecha);
+  const ult = ultimo(key, st.fecha); const rf = refFuerza(key, e, st.fecha);
   const lastTxt = ult ? 'Última vez (' + fechaTxt(ult.fecha) + '): ' + ult.series.filter(s => s && s.done).map(s => (s.peso || '') + ' × ' + (s.reps || '')).join(' · ') : 'Primera vez con este ejercicio';
+  const refHtml = rf ? `<div class="row wrap" style="gap:6px"><span class="chip">Mejor: ${kgTxt(rf.mejor.peso)} × ${esc(rf.mejor.reps)}</span>${rf.rm ? `<span class="chip ok">1RM ≈ ${num1(rf.rm)} kg</span>` : ''}</div>` : '';
   const all = dp.bloques.flatMap(x => x.ej.map(y => [x.id, y.n])); const pos = all.findIndex(([x, y]) => x === bid && y === en); const sig = all[pos + 1];
   return `<div class="grab"></div>
   <div class="row" style="align-items:flex-start"><div class="bigimg"><img src="${e.img}" alt="${esc(e.nombre)}">${e.musculo ? `<img class="mus" src="${e.musculo}" alt="Músculos trabajados">` : ''}</div>
@@ -390,6 +448,7 @@ function hojaEjercicio(bid, en) {
   ${e.tecnica ? `<div class="banner">${esc(e.tecnica)}</div>` : ''}
   ${e.superserie ? `<span class="small" style="color:var(--accent-ink);font-weight:700">Superserie ${esc(e.superserie)}</span>` : ''}
   <span class="small muted">${e.aproximacion ? 'Antes: aproximación 6-3-1 <button class="chip" data-act="metodo" data-v="APROXIMACION">ⓘ</button> · ' : ''}${esc(lastTxt)}</span>
+  ${refHtml}
   <div class="card sets"><div class="set tiny muted" style="border-top:0;padding-top:0"><span>#</span><span>Prescrito</span><span>Hecho · kg y reps</span><span></span></div>
   ${e.series.map((s, i) => { const r = reg[i] || {}; const prev = ult && ult.series[i] ? ult.series[i] : {};
     const pres = s.peso.replace(/\s*kg.*$/i, '').replace(/ →.*$/, ''); const peso = r.peso != null ? r.peso : (prev.peso || (/^\d/.test(pres) ? pres : ''));
@@ -476,10 +535,44 @@ const EQUIV = {
   'Hidratos · ≈41 g por comida': [['Patata cocida', '240 g', '2 patatas pequeñas'], ['Boniato cocido', '200 g', '1 mediano'], ['Arroz cocido', '145 g', '¾ de taza'], ['Pasta cocida', '140–165 g', '1 taza'], ['Pan integral', '90–100 g', '3 rebanadas de 30 g'], ['Avena seca', '65 g', '¾ de taza + 1 cda'], ['Manzana', '300 g', '2 pequeñas']],
   'Grasas · ≈29 g por comida': [['AOVE', '29 g', '2 cdas + ½ cdta'], ['Aguacate', '190 g', '1 grande'], ['Frutos secos', '50–60 g', '2 puñados pequeños'], ['Crema de cacahuete', '55–60 g', '4 cdas rasas'], ['Huevos enteros*', '2', 'aportan 10–11 g de grasa']]
 };
+function hojaLinea(mi, i) {
+  const dia = getDia(st.fecha); const lc = lineasComida(dia, mi); const l = lc.L[i]; if (!l || !l.a) return '';
+  const a = ALI[l.a]; const m = macA(l.a, l.g); const eq = equivalentes(l.a, l.g);
+  const clave = { p: 'proteína', c: 'hidratos', gr: 'grasa', kcal: 'calorías' }[CLAVE_GRUPO[a.g]];
+  return `<div class="grab"></div><span class="eyebrow">${esc(MOMENTOS[mi][1])} · ${esc(GRUPOS[a.g] || '')}</span><h2>${esc(nombreCorto(l.a))}</h2>
+  <div class="row"><div class="field grow"><label for="lg">Cantidad (g)</label><input id="lg" inputmode="decimal" value="${fmt(l.g).replace('.', '')}"></div>
+    <div class="col" style="gap:2px;align-self:flex-end"><span class="small">${esc(casera(l.a, l.g))}</span><span class="tiny muted">P ${fmt(m.p)} · HC ${fmt(m.c)} · G ${fmt(m.g)} · ${fmt(m.kcal)} kcal</span></div></div>
+  <div class="row"><button class="btn primary grow" data-act="lin-g" data-mi="${mi}" data-i="${i}">Guardar cantidad</button><button class="btn" data-act="lin-quitar" data-mi="${mi}" data-i="${i}">Quitar</button></div>
+  ${eq.length ? `<div class="card"><span class="eyebrow">Cambiar por · misma ${clave}</span><div class="list">${eq.map(e => { const dp = Math.round(e.m.p - m.p), dk = Math.round(e.m.kcal - m.kcal);
+    return `<button class="linea row" data-act="lin-cambiar" data-mi="${mi}" data-i="${i}" data-a="${e.a}" data-g="${e.g}"><span class="grow"><b class="small">${esc(nombreCorto(e.a))}</b> <span class="small">· ${fmt(e.g)} g</span><br><span class="tiny muted">${esc(casera(e.a, e.g))} · P ${fmt(e.m.p)} · ${fmt(e.m.kcal)} kcal</span></span>
+      <span class="delta ${dk > 0 ? 'minus' : 'plus'}">${dk > 0 ? '+' : ''}${dk} kcal${dp ? '<br>' + (dp > 0 ? '+' : '') + dp + ' P' : ''}</span></button>`; }).join('')}</div></div>` : ''}
+  <button class="btn block" data-act="cerrar">Cerrar</button>`;
+}
+function hojaAnadir(mi) {
+  const q = (st.sheet.q || '').toLowerCase();
+  const lista = (window.ALIMENTOS || []).filter(a => !q || a.n.toLowerCase().includes(q));
+  return `<div class="grab"></div><span class="eyebrow">${esc(MOMENTOS[mi][1])}</span><h2>Añadir alimento</h2>
+  <div class="field"><label for="buscar">Buscar</label><input id="buscar" data-buscar="1" value="${esc(st.sheet.q || '')}" placeholder="pollo, arroz, yogur…" autocomplete="off"></div>
+  ${Object.entries(GRUPOS).map(([g, t]) => { const L = lista.filter(a => a.g === g); return L.length ? `<div class="card"><span class="eyebrow">${t}</span><div class="list">${L.map(a => { const gr = a.rac[0][1]; const m = macA(a.id, gr);
+    return `<button class="linea row" data-act="lin-add" data-mi="${mi}" data-a="${a.id}" data-g="${gr}"><span class="grow"><b class="small">${esc(nombreCorto(a.id))}</b><br><span class="tiny muted">1 ${esc(a.rac[0][0])} (${fmt(gr)} g) · P ${fmt(m.p)} · ${fmt(m.kcal)} kcal</span></span><span class="small">+</span></button>`; }).join('')}</div></div>` : ''; }).join('')}
+  <button class="btn block" data-act="cerrar">Cerrar</button>`;
+}
 function hojaEquiv() {
-  return `<div class="grab"></div><h1>Equivalencias</h1><span class="small muted">Tablas de Jesús (referencia 1.950 kcal). * Complemento: no cubre la comida solo.</span>
+  const modo = st.sheet.modo || 'jesus'; const q = (st.sheet.q || '').toLowerCase();
+  const OBJ_COMIDA = { p: 57, c: 41, gr: 29 };
+  const tabla = () => Object.entries(GRUPOS).map(([g, t]) => { const L = (window.ALIMENTOS || []).filter(a => a.g === g && (!q || a.n.toLowerCase().includes(q))); if (!L.length) return '';
+    const k = CLAVE_GRUPO[g]; const ref = OBJ_COMIDA[k];
+    return `<div class="card"><span class="eyebrow">${t}${ref ? ' · ración ≈ ' + ref + ' g de ' + { p: 'proteína', c: 'hidratos', gr: 'grasa' }[k] : ''}</span><div class="list">${L.map(a => {
+      const gr = ref ? Math.round(ref / a[k] * 100 / 5) * 5 : a.rac[0][1];
+      return `<div class="row"><span class="grow"><b class="small">${esc(nombreCorto(a.id))}</b><br><span class="tiny muted">${esc(a.rac.map(([n, g]) => n + ' ' + fmt(g) + ' g').join(' · '))}</span><br><span class="tiny muted">100 g: P ${a.p} · HC ${a.c} · G ${a.gr} · ${a.kcal} kcal</span></span>
+        <span style="text-align:right"><b class="small">${fmt(gr)} g</b><br><span class="tiny muted">${esc(casera(a.id, gr))}</span></span></div>`; }).join('')}</div></div>`; }).join('');
+  return `<div class="grab"></div><h1>Equivalencias</h1>
+  <div class="seg" role="group" aria-label="Tabla"><button data-act="eq-modo" data-v="jesus" aria-pressed="${modo === 'jesus'}">De Jesús</button><button data-act="eq-modo" data-v="todo" aria-pressed="${modo === 'todo'}">Todos los alimentos</button></div>
+  ${modo === 'jesus' ? `<span class="small muted">Tablas de Jesús (referencia 1.950 kcal). * Complemento: no cubre la comida solo.</span>
   ${Object.entries(EQUIV).map(([t, rows]) => `<div class="card"><span class="eyebrow">${esc(t)}</span><div class="list">${rows.map(([a, b, c]) => `<div class="row"><span class="grow"><b class="small">${esc(a)}</b><br><span class="tiny muted">${esc(c)}</span></span><b class="small">${esc(b)}</b></div>`).join('')}</div></div>`).join('')}
-  <div class="banner"><b>Jesús:</b> combina. 150 g de pollo + 100 g de lentejas ≈ 55 g de proteína.</div>
+  <div class="banner"><b>Jesús:</b> combina. 150 g de pollo + 100 g de lentejas ≈ 55 g de proteína.</div>`
+  : `<span class="small muted">Gramos para una ración de comida principal y medidas caseras. Pesos en cocinado salvo avena, frutos secos y aceite.</span>
+  <div class="field"><label for="buscar">Buscar</label><input id="buscar" data-buscar="1" value="${esc(st.sheet.q || '')}" placeholder="merluza, quinoa…" autocomplete="off"></div>${tabla()}`}
   <button class="btn block" data-act="cerrar">Cerrar</button>`;
 }
 
@@ -488,29 +581,78 @@ function medidas() {
   const base = [{ fecha: '2026-09-01', peso: 90.9, grasa: 22.1, cintura: 94, origen: 'Jesús' }, { fecha: '2026-10-01', peso: 92.1, cintura: 95, origen: 'Jesús' }];
   return base.concat(load('medidas', [])).sort((a, b) => a.fecha < b.fecha ? -1 : 1);
 }
-function vistaProgreso() {
-  const M = medidas(); const ult = M[M.length - 1]; const first = M[0];
-  const x0 = parse('2026-09-01'), x1 = parse('2027-01-03'); const W = 330, H = 150;
-  const X = (f) => 30 + (parse(f) - x0) / (x1 - x0) * (W - 44); const Y = (v) => 10 + (94 - v) * 130 / 12;
-  const pts = M.filter(m => m.peso).map(m => [X(m.fecha), Y(m.peso)]);
-  return `<div class="row between"><div class="col" style="gap:2px"><span class="small muted">Semana ${Math.max(1, Math.min(semanaN(st.fecha), SEMANAS))} de 12 · fin 3 ene</span><h1>Progreso</h1></div><button class="btn primary" data-act="pesarme">+ Pesarme</button></div>
-  <div class="card"><div class="row between"><b>Peso</b><span><span class="num" style="font-size:26px">${String(ult.peso).replace('.', ',')} kg</span> <span class="small ${ult.peso > first.peso ? '' : ''}" style="color:${ult.peso > first.peso ? 'var(--bad)' : 'var(--good)'}">${ult.peso > first.peso ? '+' : ''}${(ult.peso - first.peso).toFixed(1).replace('.', ',')} vs sep</span></span></div>
-  <svg viewBox="0 0 ${W} 160" role="img" aria-label="Evolución del peso y objetivo de 84 a 86 kg el 3 de enero" style="width:100%;height:auto">
-    ${[94, 90, 86, 82].map(v => `<line x1="30" x2="${W - 14}" y1="${Y(v)}" y2="${Y(v)}" stroke="var(--soft)"/><text x="24" y="${Y(v) + 4}" text-anchor="end" font-size="10" fill="var(--muted)">${v}</text>`).join('')}
-    <rect x="${X(INICIO)}" y="${Y(86)}" width="${W - 14 - X(INICIO)}" height="${Y(84) - Y(86)}" fill="var(--good-soft)"/>
+const METRICAS = [['peso', 'Peso', 'kg'], ['cintura', 'Cintura', 'cm'], ['grasa', '% grasa', '%'], ['musculo', 'Masa muscular', 'kg'], ['cadera', 'Cadera', 'cm'], ['pecho', 'Pecho', 'cm'], ['brazo', 'Brazo', 'cm'], ['muslo', 'Muslo', 'cm'], ['cuello', 'Cuello', 'cm']];
+const num1 = (v) => String(Math.round(v * 10) / 10).replace('.', ',');
+function grafica(M, campo, unidad) { // línea simple de una medida entre 1 sep y 3 ene
+  const P = M.filter(m => m[campo] != null && m[campo] !== ''); if (!P.length) return '<span class="small muted">Sin datos todavía.</span>';
+  const vals = P.map(m => +m[campo]); let lo = Math.min(...vals), hi = Math.max(...vals);
+  if (campo === 'peso') { lo = Math.min(lo, 84); hi = Math.max(hi, 86); }
+  const pad = Math.max(1, (hi - lo) * 0.15); lo = Math.floor(lo - pad); hi = Math.ceil(hi + pad);
+  const x0 = parse('2026-09-01'), x1 = parse('2027-01-03'); const W = 330;
+  const X = (f) => 30 + (parse(f) - x0) / (x1 - x0) * (W - 44); const Y = (v) => 10 + (hi - v) * 130 / (hi - lo);
+  const pts = P.map(m => [X(m.fecha), Y(+m[campo])]); const ticks = [hi, (hi + lo) / 2, lo];
+  return `<svg viewBox="0 0 ${W} 160" role="img" aria-label="Evolución de ${esc(campo)}" style="width:100%;height:auto">
+    ${ticks.map(v => `<line x1="30" x2="${W - 14}" y1="${Y(v)}" y2="${Y(v)}" stroke="var(--soft)"/><text x="24" y="${Y(v) + 4}" text-anchor="end" font-size="10" fill="var(--muted)">${num1(v)}</text>`).join('')}
+    ${campo === 'peso' ? `<rect x="${X(INICIO)}" y="${Y(86)}" width="${W - 14 - X(INICIO)}" height="${Y(84) - Y(86)}" fill="var(--good-soft)"/><text x="${W - 16}" y="${Y(86) - 4}" text-anchor="end" font-size="10" font-weight="700" fill="var(--good)">objetivo 84–86</text>` : ''}
     <line x1="${X(INICIO)}" x2="${X(INICIO)}" y1="10" y2="140" stroke="var(--accent)" stroke-dasharray="3 3"/>
-    <polyline points="${pts.map(p => p.join(',')).join(' ')}" fill="none" stroke="var(--ink)" stroke-width="2.5"/>
+    ${pts.length > 1 ? `<polyline points="${pts.map(p => p.join(',')).join(' ')}" fill="none" stroke="var(--ink)" stroke-width="2.5"/>` : ''}
     ${pts.map(p => `<circle cx="${p[0]}" cy="${p[1]}" r="4" fill="var(--ink)"/>`).join('')}
-    <text x="${W - 16}" y="${Y(86) - 4}" text-anchor="end" font-size="10" font-weight="700" fill="var(--good)">objetivo 84–86</text>
-    <text x="30" y="156" font-size="10" fill="var(--muted)">1 sep</text><text x="${X(INICIO) + 3}" y="156" font-size="10" fill="var(--accent-ink)">inicio</text><text x="${W - 14}" y="156" text-anchor="end" font-size="10" fill="var(--muted)">3 ene</text>
-  </svg></div>
-  <div class="card list">${M.slice().reverse().map(m => `<div class="row"><span class="grow small">${fechaTxt(m.fecha)} <span class="muted tiny">· ${esc(m.origen || 'tú')}</span></span><b class="small">${m.peso ? String(m.peso).replace('.', ',') + ' kg' : ''}${m.cintura ? ' · ' + m.cintura + ' cm' : ''}${m.grasa ? ' · ' + String(m.grasa).replace('.', ',') + ' %' : ''}</b></div>`).join('')}</div>
-  <p class="tiny muted">Actividad, fuerza y analítica llegan en las próximas fases.</p>`;
+    <text x="30" y="156" font-size="10" fill="var(--muted)">1 sep</text><text x="${X(INICIO) + 3}" y="156" font-size="10" fill="var(--accent-ink)">inicio</text><text x="${W - 14}" y="156" text-anchor="end" font-size="10" fill="var(--muted)">3 ene</text></svg>`;
+}
+function vistaProgreso() {
+  const modo = st.progModo || 'cuerpo';
+  const cab = `<div class="row between"><div class="col" style="gap:2px"><span class="small muted">Semana ${Math.max(1, Math.min(semanaN(st.fecha), SEMANAS))} de 12 · fin 3 ene</span><h1>Progreso</h1></div>${modo === 'cuerpo' ? '<button class="btn primary" data-act="pesarme">+ Medirme</button>' : ''}</div>
+  <div class="seg" role="group" aria-label="Sección"><button data-act="prog-modo" data-v="cuerpo" aria-pressed="${modo === 'cuerpo'}">Cuerpo</button><button data-act="prog-modo" data-v="fuerza" aria-pressed="${modo === 'fuerza'}">Fuerza</button></div>`;
+  if (modo === 'fuerza') return cab + vistaFuerza();
+  const M = medidas(); const met = st.metrica || 'peso';
+  const disp = METRICAS.filter(([k]) => M.some(m => m[k] != null && m[k] !== ''));
+  const [mk, mn, mu] = METRICAS.find(x => x[0] === met) || METRICAS[0];
+  const P = M.filter(m => m[mk] != null && m[mk] !== ''); const ult = P[P.length - 1], pri = P[0];
+  const dif = ult && pri ? +ult[mk] - +pri[mk] : 0; const malo = mk === 'musculo' ? dif < 0 : dif > 0;
+  const fotos = load('fotosProg', []);
+  return `${cab}
+  <div class="row wrap" style="gap:6px">${disp.map(([k, n]) => `<button class="chip" data-act="metrica" data-v="${k}" aria-pressed="${k === mk}" style="${k === mk ? 'background:var(--accent);color:' + (estiloActual() === 'sport' ? '#000' : '#fff') + ';font-weight:700' : ''}">${n}</button>`).join('')}</div>
+  <div class="card"><div class="row between"><b>${mn}</b>${ult ? `<span><span class="num" style="font-size:26px">${num1(ult[mk])} ${mu}</span> <span class="small" style="color:${dif ? (malo ? 'var(--bad)' : 'var(--good)') : 'var(--muted)'}">${dif > 0 ? '+' : ''}${num1(dif)} desde ${fechaTxt(pri.fecha).split(' ').slice(1).join(' ')}</span></span>` : ''}</div>
+  ${grafica(M, mk, mu)}</div>
+  <div class="card list">${M.slice().reverse().map(m => `<div class="row"><span class="grow small">${fechaTxt(m.fecha)} <span class="muted tiny">· ${esc(m.origen || 'tú')}</span></span><b class="small" style="text-align:right">${METRICAS.filter(([k]) => m[k] != null && m[k] !== '').map(([k, n, u]) => num1(m[k]) + ' ' + u).join(' · ')}</b></div>`).join('')}</div>
+  <div class="card"><div class="row between"><span class="eyebrow">Fotos de progreso · 1 vez al mes</span><button class="chip" data-act="fotos-prog">${fotos.length ? 'Ver y comparar' : 'Empezar'}</button></div>
+    ${fotos.length ? `<div class="row" style="gap:6px">${['frente', 'perfil', 'espalda'].map(p => { const f = fotos[fotos.length - 1][p]; return f ? `<img src="${f.mini}" alt="${p}" style="width:31%;aspect-ratio:3/4;object-fit:cover;border-radius:10px">` : ''; }).join('')}</div><span class="tiny muted">Últimas: ${fechaTxt(fotos[fotos.length - 1].fecha)}</span>` : '<span class="small muted">Frente, perfil y espalda. Misma luz, misma hora y misma ropa cada mes.</span>'}</div>`;
+}
+function vistaFuerza() {
+  const filas = []; PLAN.forEach(d => d.bloques.forEach(b => b.ej.forEach(e => { const r = refFuerza(ejKey(d.n, b.id, e.n), e, addDays(hoyISO(), 1)); if (r) filas.push({ d, e, r }); })));
+  if (!filas.length) return '<div class="card"><span class="small">Cuando registres series, aquí verás tu mejor marca y el 1RM estimado de cada ejercicio, y cómo evolucionan semana a semana.</span></div>';
+  const spark = (H) => { const P = H.filter(h => h.rm); if (P.length < 2) return ''; const lo = Math.min(...P.map(h => h.rm)), hi = Math.max(...P.map(h => h.rm)) || 1;
+    return `<svg viewBox="0 0 100 28" style="width:90px;height:26px" aria-hidden="true"><polyline points="${P.map((h, i) => (i / (P.length - 1) * 96 + 2) + ',' + (hi === lo ? 14 : 24 - (h.rm - lo) / (hi - lo) * 20)).join(' ')}" fill="none" stroke="var(--r-hab, var(--accent))" stroke-width="2.5"/></svg>`; };
+  const conRm = filas.filter(f => f.r.rm), sinRm = filas.filter(f => !f.r.rm);
+  return `${conRm.length ? `<div class="card"><span class="eyebrow">1RM estimado</span><div class="list">${conRm.map(({ d, e, r }) => { const P = r.H.filter(h => h.rm); const dif = P.length > 1 ? P[P.length - 1].rm - P[0].rm : 0;
+    return `<div class="row"><span class="grow"><b class="small">${esc(e.nombre)}</b><br><span class="tiny muted">Día ${d.n} · mejor ${kgTxt(r.mejor.peso)} × ${esc(r.mejor.reps)}</span></span>${spark(r.H)}<span style="text-align:right"><b class="num" style="font-size:20px">${num1(r.rm)} kg</b>${dif ? `<br><span class="delta ${dif > 0 ? 'plus' : 'minus'}">${dif > 0 ? '+' : ''}${num1(dif)}</span>` : ''}</span></div>`; }).join('')}</div>
+    <span class="tiny muted">Estimado con la fórmula de Epley a partir de tus series (reps + RIR prescrito). Solo en series simples: en drops, clusters, rest-pause o forzadas no tiene sentido.</span></div>` : ''}
+  ${sinRm.length ? `<div class="card"><span class="eyebrow">Mejores marcas</span><div class="list">${sinRm.map(({ d, e, r }) => `<div class="row"><span class="grow small"><b>${esc(e.nombre)}</b> <span class="tiny muted">· Día ${d.n}</span></span><b class="small">${kgTxt(r.mejor.peso)} × ${esc(r.mejor.reps)}</b></div>`).join('')}</div></div>` : ''}`;
 }
 function hojaPesarme() {
-  return `<div class="grab"></div><h2>Pesaje semanal</h2><span class="small muted">Lunes en ayunas, después del baño.</span>
-  <div class="row"><div class="field grow"><label for="mp">Peso (kg)</label><input id="mp" inputmode="decimal" placeholder="91,6"></div><div class="field grow"><label for="mc">Cintura (cm, opcional)</label><input id="mc" inputmode="decimal" placeholder="94,5"></div></div>
+  const M = medidas(); const ultDe = (k) => { for (let i = M.length - 1; i >= 0; i--) if (M[i][k] != null && M[i][k] !== '') return M[i][k]; return ''; };
+  const campo = (k, n, u) => `<div class="field"><label for="m-${k}">${n} (${u})</label><input id="m-${k}" data-med="${k}" inputmode="decimal" placeholder="${ultDe(k) !== '' ? num1(ultDe(k)) : ''}"></div>`;
+  return `<div class="grab"></div><h2>Medirme</h2><span class="small muted">Lunes en ayunas, después del baño. Perímetros con cinta, relajado, siempre en el mismo punto. En gris, tu última medida.</span>
+  <div class="row">${campo('peso', 'Peso', 'kg')}${campo('cintura', 'Cintura', 'cm')}</div>
+  <div class="card"><span class="eyebrow">Opcional</span>
+    <div class="row">${campo('grasa', '% grasa', '%')}${campo('musculo', 'Masa muscular', 'kg')}</div>
+    <div class="row">${campo('cadera', 'Cadera', 'cm')}${campo('pecho', 'Pecho', 'cm')}</div>
+    <div class="row">${campo('brazo', 'Brazo', 'cm')}${campo('muslo', 'Muslo', 'cm')}</div>
+    <div class="row">${campo('cuello', 'Cuello', 'cm')}<span class="grow"></span></div></div>
   <button class="btn primary block" data-act="guardar-peso">Guardar</button>`;
+}
+function hojaFotosProg() {
+  const F = load('fotosProg', []); const hoy = F.find(f => f.fecha === st.fecha) || { fecha: st.fecha };
+  const a = st.sheet.a != null ? st.sheet.a : 0, b = st.sheet.b != null ? st.sheet.b : F.length - 1;
+  const poses = ['frente', 'perfil', 'espalda'];
+  return `<div class="grab"></div><h2>Fotos de progreso</h2>
+  <div class="card"><span class="eyebrow">${fechaTxt(st.fecha)}</span><div class="row" style="gap:6px">${poses.map(p => `<button class="linea" data-act="foto-prog" data-v="${p}" style="width:31%;aspect-ratio:3/4;border-radius:10px;background:var(--soft);overflow:hidden;display:flex;align-items:center;justify-content:center">${hoy[p] ? `<img src="${hoy[p].mini}" alt="${p}" style="width:100%;height:100%;object-fit:cover">` : `<span class="small">+ ${p}</span>`}</button>`).join('')}</div>
+    <span class="tiny muted">Toca cada hueco para hacer o elegir la foto. La foto original se guarda en tu nube privada.</span></div>
+  ${F.length > 1 ? `<div class="card"><span class="eyebrow">Comparar</span>
+    <div class="row"><div class="field grow"><label for="fa">Antes</label><select id="fa" data-comp="a">${F.map((f, i) => `<option value="${i}" ${i === a ? 'selected' : ''}>${fechaTxt(f.fecha)}</option>`).join('')}</select></div>
+    <div class="field grow"><label for="fb">Después</label><select id="fb" data-comp="b">${F.map((f, i) => `<option value="${i}" ${i === b ? 'selected' : ''}>${fechaTxt(f.fecha)}</option>`).join('')}</select></div></div>
+    ${poses.map(p => (F[a][p] || F[b][p]) ? `<div class="row" style="gap:6px">${[F[a], F[b]].map(f => f[p] ? `<img src="${f[p].mini}" alt="${p} ${f.fecha}" style="width:50%;aspect-ratio:3/4;object-fit:cover;border-radius:10px">` : '<span class="grow"></span>').join('')}</div>` : '').join('')}</div>` : ''}
+  <button class="btn block" data-act="cerrar">Cerrar</button>`;
 }
 function hojaPasos() {
   const dia = getDia(st.fecha);
@@ -576,7 +718,10 @@ function renderSheet() {
   else if (s.t === 'semana') html = hojaSemana();
   else if (s.t === 'platos') html = hojaPlatos();
   else if (s.t === 'equiv') html = hojaEquiv();
+  else if (s.t === 'linea') html = hojaLinea(s.mi, s.i);
+  else if (s.t === 'anadir') html = hojaAnadir(s.mi);
   else if (s.t === 'pesarme') html = hojaPesarme();
+  else if (s.t === 'fotosprog') html = hojaFotosProg();
   else if (s.t === 'pasos') html = hojaPasos();
   else if (s.t === 'importar') html = hojaImportar();
   const prev = el.querySelector('.sheet'); const top = prev ? prev.scrollTop : 0;
@@ -606,7 +751,7 @@ function renderTimer() {
 }
 
 /* ---------- fotos ---------- */
-let fotoMi = null;
+let fotoMi = null; let fotoModo = null;
 function subirFoto(fecha, k, blob) {
   if (!sb || !nube.user) { toast('Foto guardada solo en el móvil (entra en tu cuenta para subirla)'); return; }
   const ruta = nube.user.id + '/' + fecha + '-' + k + '-' + Date.now() + '.jpg';
@@ -614,13 +759,21 @@ function subirFoto(fecha, k, blob) {
     if (error) { toast('No se pudo subir la foto: ' + error.message); return; }
     setDia(fecha, d => { const c = d.comidas[k] = d.comidas[k] || {}; c.fotoNube = ruta; }); });
 }
-function pedirFoto(mi) { fotoMi = mi; const f = $('#foto'); f.value = ''; f.click(); }
+function pedirFoto(mi) { if (mi != null) fotoModo = null; fotoMi = mi; const f = $('#foto'); f.value = ''; f.click(); }
 $('#foto').addEventListener('change', (ev) => {
   const file = ev.target.files && ev.target.files[0]; if (!file) return;
   const img = new Image(); const url = URL.createObjectURL(file);
   img.onload = () => {
     const lienzo = (max) => { const r = Math.min(1, max / Math.max(img.width, img.height)); const c = document.createElement('canvas');
       c.width = Math.round(img.width * r); c.height = Math.round(img.height * r); c.getContext('2d').drawImage(img, 0, 0, c.width, c.height); return c; };
+    if (fotoModo) { const pose = fotoModo; fotoModo = null; const mini = lienzo(360).toDataURL('image/jpeg', 0.7);
+      lienzo(1600).toBlob(blob => { URL.revokeObjectURL(url); const F = load('fotosProg', []); let f = F.find(x => x.fecha === st.fecha); if (!f) { f = { fecha: st.fecha }; F.push(f); F.sort((x, y) => x.fecha < y.fecha ? -1 : 1); }
+        f[pose] = { mini }; save('fotosProg', F); renderSheet();
+        if (sb && nube.user) { const ruta = nube.user.id + '/progreso/' + st.fecha + '-' + pose + '-' + Date.now() + '.jpg';
+          sb.storage.from('fotos').upload(ruta, blob, { contentType: 'image/jpeg' }).then(({ error }) => { if (error) { toast('No se pudo subir la foto: ' + error.message); return; }
+            const F2 = load('fotosProg', []); const g = F2.find(x => x.fecha === f.fecha); if (g && g[pose]) { g[pose].nube = ruta; save('fotosProg', F2); } }); }
+        else toast('Foto guardada solo en el móvil (entra en tu cuenta para subirla)'); }, 'image/jpeg', 0.85);
+      return; }
     const mini = lienzo(200).toDataURL('image/jpeg', 0.6);   // miniatura ligera para el móvil (~8 KB)
     lienzo(1280).toBlob(blob => { URL.revokeObjectURL(url);   // la foto buena va a la nube para Jesús
       if (st.sheet && st.sheet.t === 'marcar') { st.sheet.foto = mini; st.sheet.fotoBlob = blob; renderSheet(); }
@@ -677,6 +830,25 @@ document.addEventListener('click', (ev) => {
     case 'marcar-rapido': { const mi = +t.dataset.mi; const k = MOMENTOS[mi][0]; setDia(st.fecha, d => { d.comidas[k] = Object.assign(d.comidas[k] || {}, { estado: 'seguida' }); d.habitos['s_' + k] = d.habitos['s_' + k] || DATOS.suplementos.some(s => s.momento === k); }); toast(MOMENTOS[mi][1] + ' marcado'); break; }
     case 'abrir-marcar': { const mi = +t.dataset.mi; const reg = getDia(st.fecha).comidas[MOMENTOS[mi][0]] || {}; abrir({ t: 'marcar', mi, estado: reg.estado || (t.textContent.includes('Fuera') ? 'fuera' : getDia(st.fecha).tipo === 'viaje' ? 'seguida' : 'cambiada') }); return; }
     case 'foto': pedirFoto(+t.dataset.mi); return;
+    case 'eq-modo': st.sheet.modo = v; renderSheet(); return;
+    case 'linea': abrir({ t: 'linea', mi: +t.dataset.mi, i: +t.dataset.i }); return;
+    case 'lin-anadir': abrir({ t: 'anadir', mi: +t.dataset.mi, q: '' }); return;
+    case 'lin-paso': case 'lin-g': case 'lin-quitar': case 'lin-cambiar': case 'lin-add': {
+      const mi = +t.dataset.mi, i = +t.dataset.i, k = MOMENTOS[mi][0];
+      setDia(st.fecha, d => { const L = lineasComida(d, mi).L; const l = L[i]; const c = d.comidas[k] = d.comidas[k] || {};
+        if (a === 'lin-paso' && l && l.a) { const p = ALI[l.a].paso[1]; l.g = Math.max(0, Math.round((l.g + p * (+v)) * 10) / 10); if (!l.g) L.splice(i, 1); }
+        if (a === 'lin-g' && l) { const g = parseFloat(($('#lg').value || '').replace(',', '.')); if (g >= 0) l.g = g; if (!l.g) L.splice(i, 1); }
+        if (a === 'lin-quitar') L.splice(i, 1);
+        if (a === 'lin-cambiar' && l) { l.a = t.dataset.a; l.g = +t.dataset.g; l.t = nombreCorto(l.a); }
+        if (a === 'lin-add') L.push({ a: t.dataset.a, g: +t.dataset.g, t: nombreCorto(t.dataset.a) });
+        c.lineas = L; });
+      if (a === 'lin-paso') break;
+      if (a === 'lin-add') toast(nombreCorto(t.dataset.a) + ' añadido');
+      cerrar(); return; }
+    case 'lin-guardar': { const mi = +t.dataset.mi; const d = getDia(st.fecha); save(claveMio(d, mi), lineasComida(d, mi).L); toast('Guardado como tu menú ' + d.menu + ' (' + MOMENTOS[mi][1].toLowerCase() + ')'); break; }
+    case 'lin-reset': { const mi = +t.dataset.mi; const k = MOMENTOS[mi][0]; const d0 = getDia(st.fecha);
+      if ((d0.comidas[k] || {}).lineas) { setDia(st.fecha, d => { delete d.comidas[k].lineas; }); toast(load(claveMio(d0, mi), null) ? 'Vuelves a tu menú guardado' : 'Menú de Jesús restaurado'); }
+      else { save(claveMio(d0, mi), null); toast('Menú de Jesús restaurado'); } break; }
     case 'estado': st.sheet.estado = v; renderSheet(); return;
     case 'adj': { const mi = +t.dataset.mi, i = +t.dataset.i, k = MOMENTOS[mi][0];
       setDia(st.fecha, d => { const c = d.comidas[k] = d.comidas[k] || {}; c.adj = c.adj || {}; c.adj[i] = Math.max(-6, Math.min(6, (c.adj[i] || 0) + (+v))); });
@@ -714,9 +886,15 @@ document.addEventListener('click', (ev) => {
     case 'metodo': abrir({ t: 'metodo', k: v }); return;
     case 'ver-mas': st.verMas = true; renderSheet(); return;
     case 'pesarme': abrir({ t: 'pesarme' }); return;
-    case 'guardar-peso': { const p = parseFloat(($('#mp').value || '').replace(',', '.')); const c = parseFloat(($('#mc').value || '').replace(',', '.'));
-      if (!p) { toast('Escribe el peso'); return; }
-      const L = load('medidas', []).filter(m => m.fecha !== st.fecha); L.push({ fecha: st.fecha, peso: p, cintura: c || undefined, origen: 'tú' }); save('medidas', L); toast('Peso guardado'); cerrar(); return; }
+    case 'guardar-peso': { const m = { fecha: st.fecha, origen: 'tú' }; let n = 0;
+      document.querySelectorAll('[data-med]').forEach(inp => { const x = parseFloat((inp.value || '').replace(',', '.')); if (x > 0) { m[inp.dataset.med] = x; n++; } });
+      if (!n) { toast('Escribe al menos una medida'); return; }
+      const L = load('medidas', []); const prev = L.find(x => x.fecha === st.fecha);
+      const L2 = L.filter(x => x.fecha !== st.fecha); L2.push(Object.assign({}, prev || {}, m)); save('medidas', L2); toast('Medidas guardadas'); cerrar(); return; }
+    case 'prog-modo': st.progModo = v; break;
+    case 'metrica': st.metrica = v; break;
+    case 'fotos-prog': abrir({ t: 'fotosprog' }); return;
+    case 'foto-prog': fotoModo = v; pedirFoto(null); return;
     case 'exportar': { const dump = {}; try { for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k.startsWith('fs:')) dump[k] = localStorage.getItem(k); } } catch (e) {}
       const txt = JSON.stringify(dump);
       (navigator.clipboard ? navigator.clipboard.writeText(txt) : Promise.reject()).then(() => toast('Copia copiada al portapapeles'), () => { abrir({ t: 'importar' }); setTimeout(() => { const ta = $('#imp'); if (ta) { ta.value = txt; ta.select(); } toast('Copia el texto seleccionado'); }, 50); });
@@ -742,8 +920,12 @@ document.addEventListener('click', (ev) => {
   }
   render();
 });
+document.addEventListener('input', (ev) => {
+  const t = ev.target; if (t.dataset.buscar && st.sheet) { st.sheet.q = t.value; const pos = t.selectionStart; renderSheet(); const n = $('#buscar'); if (n) { n.focus(); try { n.setSelectionRange(pos, pos); } catch (e) {} } }
+});
 document.addEventListener('change', (ev) => {
   const t = ev.target;
+  if (t.dataset.comp && st.sheet) { st.sheet[t.dataset.comp] = +t.value; renderSheet(); return; }
   if (t.dataset.sem) { const lun = lunes(st.fecha); const sem = getSemana(st.fecha).slice(); const i = +t.dataset.i;
     sem[i] = Object.assign({}, sem[i], { [t.dataset.sem]: t.dataset.sem === 'menu' ? +t.value : t.value }); save('sem:' + lun, sem);
     const f = addDays(lun, i); const d = load('dia:' + f, null); if (d) { delete d[t.dataset.sem]; delete d.diaEntreno; save('dia:' + f, d); }

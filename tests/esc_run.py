@@ -1,3 +1,4 @@
+import os
 exec(open('esc.py').read())
 def s1_semana(p,b):
     ctx,pg=nuevo(p,b,'2026-10-12T08:00:00')
@@ -33,7 +34,7 @@ def s4_sesion(p,b):
     pg.locator('.set input').nth(0).fill('8'); pg.locator('.set input').nth(1).fill('10')
     pg.locator('[data-nota]').fill('molestia <b>hombro</b>')
     act(pg,'.set [data-act=serie]')
-    check(pg.locator('#timer:not([hidden])').count()==1,'Cronómetro arranca al marcar serie')
+    check(pg.locator('#timer:not([hidden])').count()==0,'Sin cronómetro en ejercicio sin descanso')
     pg.locator('.set input').nth(2).fill('9')   # serie 2 peso, sin marcar
     act(pg,'[data-act=cerrar]')
     d=ls(pg,'dia:2026-10-12'); k=list(d['sesion']['series'].keys())[0]; s=d['sesion']['series'][k]
@@ -56,7 +57,7 @@ def s5_comida(p,b):
     ctx,pg=nuevo(p,b,'2026-10-12T14:10:00')
     act(pg,'[data-tab=comida]')
     tot0=pg.inner_text('.macros') if pg.locator('.macros').count() else ''
-    act(pg,'[data-act=adj][data-v="1"]'); act(pg,'[data-act=adj][data-v="1"]')
+    act(pg,'[data-act=lin-paso][data-v="1"]')
     d=ls(pg,'dia:2026-10-12'); print('comidas',d['comidas'])
     act(pg,'[data-act=abrir-marcar]'); act(pg,'[data-act=estado][data-v=fuera]')
     print(pg.inner_text('.sheet')[:300])
@@ -82,7 +83,7 @@ def s6_sync(p,b):
     check(ls(B,'dia:2026-10-12') is not None,'Segundo dispositivo recibe los datos')
     act(B,'[data-tab=hoy]'); hb=B.inner_text('#main')
     # B cambia peso; A trae al volver a primer plano
-    act(B,'[data-tab=progreso]'); act(B,'[data-act=pesarme]'); B.fill('#mp','91,4'); act(B,'[data-act=guardar-peso]'); B.wait_for_timeout(2000)
+    act(B,'[data-tab=progreso]'); act(B,'[data-act=pesarme]'); B.fill('#m-peso','91,4'); act(B,'[data-act=guardar-peso]'); B.wait_for_timeout(2000)
     A.evaluate("document.dispatchEvent(new Event('visibilitychange'))"); A.wait_for_timeout(1500)
     m=ls(A,'medidas'); check(m and any(x['peso']==91.4 for x in m),'Peso apuntado en B aparece en A')
     # offline en A

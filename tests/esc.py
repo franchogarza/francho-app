@@ -15,7 +15,7 @@ def nuevo(p,b,fecha='2026-10-12T09:00:00',estilo=None):
     ctx.expose_function('dbUpsert',upsert); ctx.expose_function('dbSelect',select)
     pg=ctx.new_page(); pg.errs=[]
     pg.on('pageerror',lambda e:pg.errs.append(str(e)))
-    pg.route('**/supabase.js*',lambda r:r.fulfill(path='mock2.js',content_type='text/javascript'))
+    pg.route('**/supabase.js*',lambda r:r.fulfill(path=os.path.join(os.path.dirname(os.path.abspath(__file__)),'mock2.js'),content_type='text/javascript'))
     pg.route('**/fonts.g*/**',lambda r:r.abort())
     pg.clock.install(time=fecha)
     pg.goto('file://'+ROOT+'/index.html'); pg.wait_for_timeout(600)

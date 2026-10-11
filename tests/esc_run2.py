@@ -1,3 +1,4 @@
+import os
 exec(open('esc.py').read())
 def r1(p,b):
     ctx,pg=nuevo(p,b,'2026-10-12T18:30:00')
@@ -42,7 +43,7 @@ def r6(p,b):
     DB.clear(); ctx,pg=nuevo(p,b,'2026-10-12T14:10:00')
     act(pg,'[data-act=ir-cuenta]'); pg.fill('#em','f@x.com'); pg.fill('#pw','secreto1'); act(pg,'[data-act=login-crear]'); pg.wait_for_timeout(1500)
     act(pg,'[data-tab=comida]'); act(pg,'[data-act=abrir-marcar]')
-    pg.set_input_files('#foto','foto.jpg'); pg.wait_for_timeout(1500)
+    pg.set_input_files('#foto',os.path.join(os.path.dirname(os.path.abspath(__file__)),'foto.jpg')); pg.wait_for_timeout(1500)
     act(pg,'[data-act=guardar-comida]'); pg.wait_for_timeout(1000)
     d=ls(pg,'dia:2026-10-12'); c=d['comidas']['desayuno']; size=len(c.get('foto',''))
     print('mini bytes',size,'nube',c.get('fotoNube'))
