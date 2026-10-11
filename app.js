@@ -398,7 +398,7 @@ function vistaComida() {
   ${comidas}
   <div class="card"><span class="eyebrow">Añadir rápido</span><div class="row wrap">${EXTRAS.map(e => `<button class="chip" data-act="extra" data-v="${e.id}">${esc(e.txt)}</button>`).join('')}</div>
     ${(dia.extras || []).length ? `<span class="small muted">Añadido hoy: ${dia.extras.map(id => esc((EXTRAS.find(e => e.id === id) || {}).txt || '')).join(', ')} · <button class="chip" data-act="extra-quitar">Quitar último</button></span>` : ''}</div>
-  <div class="tools"><button class="btn" data-act="semana">Plan de la semana</button><button class="btn" data-act="platos">Montar platos</button><button class="btn" data-act="equiv">Equivalencias</button></div>`;
+  <div class="tools"><button class="btn" data-act="compra">🛒 Compra</button><button class="btn" data-act="semana">Plan semana</button><button class="btn" data-act="platos">Montar platos</button><button class="btn" data-act="equiv">Equivalencias</button></div>`;
 }
 
 /* ---------- ENTRENO ---------- */
@@ -556,6 +556,37 @@ function hojaAnadir(mi) {
   ${Object.entries(GRUPOS).map(([g, t]) => { const L = lista.filter(a => a.g === g); return L.length ? `<div class="card"><span class="eyebrow">${t}</span><div class="list">${L.map(a => { const gr = a.rac[0][1]; const m = macA(a.id, gr);
     return `<button class="linea row" data-act="lin-add" data-mi="${mi}" data-a="${a.id}" data-g="${gr}"><span class="grow"><b class="small">${esc(nombreCorto(a.id))}</b><br><span class="tiny muted">1 ${esc(a.rac[0][0])} (${fmt(gr)} g) · P ${fmt(m.p)} · ${fmt(m.kcal)} kcal</span></span><span class="small">+</span></button>`; }).join('')}</div></div>` : ''; }).join('')}
   <button class="btn block" data-act="cerrar">Cerrar</button>`;
+}
+/* ---------- lista de la compra ---------- */
+const SECCIONES = ['Carne y pescado', 'Fruta y verdura', 'Huevos y lácteos', 'Panadería', 'Despensa'];
+function diasCompra(modo) { const ini = modo === 'semana' ? lunes(st.fecha) : st.fecha; const L = []; for (let i = 0; i < 7; i++) L.push(addDays(ini, i)); return L; }
+function listaCompra(dias) {
+  const tot = {}; let verdura = 0, comidas = 0, viajes = 0;
+  dias.forEach(f => { const d = getDia(f); if (d.tipo === 'viaje') { viajes++; return; }
+    MOMENTOS.forEach((m, mi) => { const lc = lineasComida(d, mi); comidas++;
+      lc.L.forEach(l => { if (l.a) tot[l.a] = (tot[l.a] || 0) + l.g; });
+      if (mi > 0 && lc.resto.kcal > 30) verdura += 250; }); });   // almuerzo y cena llevan verdura que Jesús no detalla
+  if (verdura) tot.verdura = (tot.verdura || 0) + verdura;
+  const items = Object.entries(tot).map(([id, g]) => { const a = ALI[id]; const c = a.compra || { sec: 'Despensa', f: 1, u: 'g' }; const bruto = g * c.f; let txt;
+    if (c.u === 'ud' || c.u === 'lata') { const n = Math.ceil(bruto / c.pz - 0.15); txt = n + (c.u === 'lata' ? (n === 1 ? ' lata' : ' latas') : n === 1 ? ' ud' : ' uds'); }
+    else if (c.u === 'ml') txt = bruto >= 1000 ? num1(Math.ceil(bruto / 250) * 250 / 1000) + ' L' : Math.ceil(bruto / 50) * 50 + ' ml';
+    else txt = bruto >= 1000 ? num1(Math.ceil(bruto / 100) * 100 / 1000) + ' kg' : Math.ceil(bruto / (bruto > 200 ? 50 : 10)) * (bruto > 200 ? 50 : 10) + ' g';
+    const nota = id === 'verdura' ? 'a elegir: tomate, calabaza, cebolla, pimiento, calabacín, judía verde' : c.f < 0.5 ? 'en seco (' + fmt(g) + ' g cocido)' : c.f > 1.05 ? 'en crudo' : '';
+    const n = id === 'verdura' ? 'Verdura variada' : /lentejas|garbanzos/.test(id) ? nombreCorto(id) + ' (bote)' : nombreCorto(id).replace(/ (cocid[oa]s?|cocinad[oa])( \/ al horno)?$/, '');
+    return { id, sec: c.sec, n, txt, nota }; });
+  return { items, comidas, viajes };
+}
+function hojaCompra() {
+  const modo = st.sheet.modo || 'semana'; const dias = diasCompra(modo); const clave = 'compra:' + dias[0];
+  const hecho = load(clave, {}); const { items, viajes } = listaCompra(dias);
+  const quedan = items.filter(i => !hecho[i.id]).length;
+  return `<div class="grab"></div><h1>Lista de la compra</h1>
+  <div class="seg" role="group" aria-label="Periodo"><button data-act="compra-modo" data-v="semana" aria-pressed="${modo === 'semana'}">Semana ${fechaTxt(lunes(st.fecha)).split(' ').slice(1).join(' ')}</button><button data-act="compra-modo" data-v="7" aria-pressed="${modo === '7'}">Próximos 7 días</button></div>
+  <span class="small muted">Según tu plan de la semana y tus cambios de menú. ${viajes ? viajes + ' día(s) de viaje no cuentan. ' : ''}Quedan ${quedan} de ${items.length}. Aceite, sal y especias, revisa la despensa.</span>
+  ${SECCIONES.map(sec => { const L = items.filter(i => i.sec === sec).sort((a, b) => a.n.localeCompare(b.n)); if (!L.length) return '';
+    return `<div class="card"><span class="eyebrow">${sec}</span><div class="list">${L.map(i => `<button class="linea row" data-act="compra-check" data-v="${i.id}" data-k="${clave}" aria-pressed="${!!hecho[i.id]}"><span style="width:24px;height:24px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-weight:900;${hecho[i.id] ? 'background:var(--good);color:' + (estiloActual() === 'sport' ? '#000' : '#fff') : 'border:2px solid var(--line)'}">${hecho[i.id] ? '✓' : ''}</span>
+      <span class="grow" style="${hecho[i.id] ? 'text-decoration:line-through;opacity:.5' : ''}"><b class="small">${esc(i.n)}</b>${i.nota ? `<br><span class="tiny muted">${esc(i.nota)}</span>` : ''}</span><b class="small">${esc(i.txt)}</b></button>`).join('')}</div></div>`; }).join('')}
+  <div class="row"><button class="btn primary grow" data-act="compra-copiar">Copiar lista</button><button class="btn grow" data-act="cerrar">Cerrar</button></div>`;
 }
 function hojaEquiv() {
   const modo = st.sheet.modo || 'jesus'; const q = (st.sheet.q || '').toLowerCase();
@@ -718,6 +749,7 @@ function renderSheet() {
   else if (s.t === 'semana') html = hojaSemana();
   else if (s.t === 'platos') html = hojaPlatos();
   else if (s.t === 'equiv') html = hojaEquiv();
+  else if (s.t === 'compra') html = hojaCompra();
   else if (s.t === 'linea') html = hojaLinea(s.mi, s.i);
   else if (s.t === 'anadir') html = hojaAnadir(s.mi);
   else if (s.t === 'pesarme') html = hojaPesarme();
@@ -831,6 +863,13 @@ document.addEventListener('click', (ev) => {
     case 'abrir-marcar': { const mi = +t.dataset.mi; const reg = getDia(st.fecha).comidas[MOMENTOS[mi][0]] || {}; abrir({ t: 'marcar', mi, estado: reg.estado || (t.textContent.includes('Fuera') ? 'fuera' : getDia(st.fecha).tipo === 'viaje' ? 'seguida' : 'cambiada') }); return; }
     case 'foto': pedirFoto(+t.dataset.mi); return;
     case 'eq-modo': st.sheet.modo = v; renderSheet(); return;
+    case 'compra': abrir({ t: 'compra' }); return;
+    case 'compra-modo': st.sheet.modo = v; renderSheet(); return;
+    case 'compra-check': { const k = t.dataset.k; const h = Object.assign({}, load(k, {})); h[v] = !h[v]; save(k, h); renderSheet(); return; }
+    case 'compra-copiar': { const dias = diasCompra(st.sheet.modo || 'semana'); const h = load('compra:' + dias[0], {}); const { items } = listaCompra(dias);
+      const txt = 'Compra ' + fechaTxt(dias[0]) + '\n' + SECCIONES.map(sec => { const L = items.filter(i => i.sec === sec && !h[i.id]); return L.length ? '\n' + sec.toUpperCase() + '\n' + L.map(i => '• ' + i.n + ' — ' + i.txt).join('\n') : ''; }).join('');
+      (navigator.clipboard ? navigator.clipboard.writeText(txt) : Promise.reject()).then(() => toast('Lista copiada: pégala en Notas o WhatsApp'), () => toast('No se pudo copiar'));
+      return; }
     case 'linea': abrir({ t: 'linea', mi: +t.dataset.mi, i: +t.dataset.i }); return;
     case 'lin-anadir': abrir({ t: 'anadir', mi: +t.dataset.mi, q: '' }); return;
     case 'lin-paso': case 'lin-g': case 'lin-quitar': case 'lin-cambiar': case 'lin-add': {
