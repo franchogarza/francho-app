@@ -36,7 +36,8 @@ const REGLAS = [
   { re: /avena|copos/i, u: '2 cdas', p: 2, c: 10, g: 1, kcal: 60 },
   { re: /pesto/i, u: '1 cda', p: 1, c: 0, g: 7, kcal: 70 }
 ];
-const regla = (txt) => REGLAS.find(r => r.re.test(txt)) || null;
+const regla = (txt) => { let best = null, bi = Infinity; // la coincidencia que aparece antes en el texto (empate: orden de la lista)
+  REGLAS.forEach(r => { const m = r.re.exec(txt); if (m && m.index < bi) { bi = m.index; best = r; } }); return best; };
 
 /* ---------- utilidades ---------- */
 const $ = (s, el = document) => el.querySelector(s);
@@ -61,8 +62,8 @@ const segs = (txt) => { // "2´" "20´´" "1´ y siguiente" → segundos
 
 /* ---------- almacenamiento local (fase 1) ---------- */
 const mem = {};
-const load = (k, def) => { try { const v = localStorage.getItem('fs:' + k); if (v != null) return JSON.parse(v); } catch (e) {} return k in mem ? mem[k] : def; };
-const save = (k, v) => { mem[k] = v; try { localStorage.setItem('fs:' + k, JSON.stringify(v)); } catch (e) { toast('No se pudo guardar en este navegador'); } if (sincroniza(k)) { marcarTs(k, Date.now()); pendiente(k); } };
+const load = (k, def) => { if (k in mem) return mem[k]; try { const v = localStorage.getItem('fs:' + k); if (v != null) return JSON.parse(v); } catch (e) {} return def; };
+const save = (k, v) => { mem[k] = v; try { localStorage.setItem('fs:' + k, JSON.stringify(v)); } catch (e) { toast('⚠ Memoria del móvil llena: avisa a Claude'); } if (sincroniza(k)) { marcarTs(k, Date.now()); pendiente(k); } };
 
 /* ---------- estilo visual ---------- */
 function estiloActual() { return document.documentElement.getAttribute('data-estilo') || 'sport'; }
@@ -86,12 +87,13 @@ function clavesLocales() { const out = []; try { for (let i = 0; i < localStorag
 async function subir() {
   if (!sb || !nube.user || !navigator.onLine) return;
   const P = pendientes(); if (!P.length) { nube.estado = 'ok'; pintarNube(); return; }
-  const filas = P.map(k => ({ alumno: nube.user.id, clave: k, valor: JSON.parse(lsGet(k) || 'null'), actualizado: new Date(tsDe(k) || Date.now()).toISOString() }));
+  P.forEach(k => { if (!tsDe(k)) marcarTs(k, Date.now()); });
+  const filas = P.map(k => ({ alumno: nube.user.id, clave: k, valor: JSON.parse(lsGet(k) || 'null'), actualizado: new Date(tsDe(k)).toISOString() }));
   nube.estado = 'subiendo'; pintarNube();
   const { error } = await sb.from('registro').upsert(filas, { onConflict: 'alumno,clave' });
   if (error) { nube.estado = 'error'; nube.err = error.message; pintarNube(); clearTimeout(flushT); flushT = setTimeout(subir, 30000); return; }
   const enviados = new Map(filas.map(f => [f.clave, f.actualizado]));
-  lsSet('_pend', JSON.stringify(pendientes().filter(k => enviados.get(k) !== new Date(tsDe(k) || 0).toISOString())));
+  lsSet('_pend', JSON.stringify(pendientes().filter(k => enviados.get(k) !== new Date(tsDe(k)).toISOString())));
   nube.estado = pendientes().length ? 'subiendo' : 'ok'; nube.ultima = new Date(); pintarNube();
   if (pendientes().length) { clearTimeout(flushT); flushT = setTimeout(subir, 1200); }
 }
@@ -154,27 +156,30 @@ const getDia = (fecha) => {
   const sem = getSemana(fecha);
   const idx = (parse(fecha).getDay() + 6) % 7;
   const base = sem[idx];
-  if (!d.tipo) d.tipo = base.tipo;
-  if (!d.menu) d.menu = base.menu;
-  if (!d.diaEntreno) { // días de entreno de la semana numerados 1..4
-    let n = 0; for (let i = 0; i <= idx; i++) if ((i === idx ? d.tipo : sem[i].tipo) === 'entreno') n++;
-    d.diaEntreno = Math.min(Math.max(n, 1), 4);
+  const der = {};
+  if (!d.tipo) d.tipo = der.tipo = base.tipo;
+  if (!d.menu) d.menu = der.menu = base.menu;
+  if (!d.diaEntreno) { // días de entreno de la semana numerados 1..4, con el tipo real de cada día
+    const lun = lunes(fecha); let n = 0;
+    for (let i = 0; i <= idx; i++) { const ti = i === idx ? d.tipo : ((load('dia:' + addDays(lun, i), null) || {}).tipo || sem[i].tipo); if (ti === 'entreno') n++; }
+    d.diaEntreno = der.diaEntreno = Math.min(Math.max(n, 1), 4);
   }
+  Object.defineProperty(d, '_der', { value: der, enumerable: false });
   return d;
 };
-const setDia = (fecha, fn) => { const d = getDia(fecha); fn(d); save('dia:' + fecha, d); };
+const setDia = (fecha, fn) => { const d = getDia(fecha); fn(d); Object.keys(d._der).forEach(k => { if (d[k] === d._der[k]) delete d[k]; }); save('dia:' + fecha, d); };
 
 /* ---------- cálculos ---------- */
 const menuDe = (n) => DATOS.menus.find(m => m.n === n) || DATOS.menus[0];
 const comidaPlan = (dia, mi) => { const c = menuDe(dia.menu).comidas[mi]; const ctx = dia.tipo === 'sin_entreno' ? c.sin : c.entreno; return { c, ctx }; };
 const macrosComida = (dia, mi) => {
   const key = MOMENTOS[mi][0]; const reg = dia.comidas[key] || {};
-  if (dia.tipo === 'viaje') { const b = VIAJE[key]; return Object.assign({}, b); }
+  if (dia.tipo === 'viaje') { const b = Object.assign({}, VIAJE[key]); if (reg.estado === 'fuera') { b.kcal = +reg.kcal || b.kcal; b.p = reg.p !== '' && reg.p != null ? +reg.p : b.p; } return b; }
   const { ctx } = comidaPlan(dia, mi);
   const m = { kcal: ctx.kcal, p: ctx.p, c: ctx.c, g: ctx.g };
   const adj = reg.adj || {};
   ctx.items.forEach((it, i) => { const r = regla(it); const st = adj[i] || 0; if (r && st) { m.kcal += r.kcal * st; m.p += r.p * st; m.c += r.c * st; m.g += r.g * st; } });
-  if (reg.estado === 'fuera') { return { kcal: +reg.kcal || m.kcal, p: +reg.p || 0, c: m.c, g: m.g }; }
+  if (reg.estado === 'fuera') { return { kcal: +reg.kcal || m.kcal, p: reg.p !== '' && reg.p != null ? +reg.p : m.p, c: m.c, g: m.g }; }
   return m;
 };
 const totalDia = (dia) => {
@@ -205,9 +210,10 @@ const ejKey = (d, b, e) => 'D' + d + '-' + b + '-' + e;
 const ultimo = (key, antesDe) => { // última vez que se registró este ejercicio
   for (let i = 1; i <= 60; i++) {
     const f = addDays(antesDe, -i); const d = load('dia:' + f, null);
-    if (d && d.sesion && d.sesion.series && d.sesion.series[key]) {
-      const s = d.sesion.series[key].filter(x => x && x.done);
-      if (s.length) return { fecha: f, series: d.sesion.series[key] };
+    const todas = d ? [d.sesion].concat(Object.values(d.sesiones || {})) : [];
+    for (const se of todas) if (se && se.series && se.series[key]) {
+      const s = se.series[key].filter(x => x && x.done);
+      if (s.length) return { fecha: f, series: se.series[key] };
     }
   }
   return null;
@@ -371,7 +377,7 @@ function vistaEntreno() {
 function hojaEjercicio(bid, en) {
   const dia = getDia(st.fecha); const n = st.entDia || dia.diaEntreno; const dp = diaPlan(n);
   const b = dp.bloques.find(x => x.id === bid); const e = b.ej.find(x => x.n === en); const key = ejKey(n, bid, en);
-  const ses = dia.sesion && dia.sesion.dia === n ? dia.sesion : null;
+  const ses = sesDia(dia, n);
   const reg = (ses && ses.series[key]) || [];
   const ult = ultimo(key, st.fecha);
   const lastTxt = ult ? 'Última vez (' + fechaTxt(ult.fecha) + '): ' + ult.series.filter(s => s && s.done).map(s => (s.peso || '') + ' × ' + (s.reps || '')).join(' · ') : 'Primera vez con este ejercicio';
@@ -386,7 +392,7 @@ function hojaEjercicio(bid, en) {
   <span class="small muted">${e.aproximacion ? 'Antes: aproximación 6-3-1 <button class="chip" data-act="metodo" data-v="APROXIMACION">ⓘ</button> · ' : ''}${esc(lastTxt)}</span>
   <div class="card sets"><div class="set tiny muted" style="border-top:0;padding-top:0"><span>#</span><span>Prescrito</span><span>Hecho · kg y reps</span><span></span></div>
   ${e.series.map((s, i) => { const r = reg[i] || {}; const prev = ult && ult.series[i] ? ult.series[i] : {};
-    const peso = r.peso != null ? r.peso : (prev.peso || s.peso.replace(/\s*kg.*$/i, '').replace(/ →.*$/, ''));
+    const pres = s.peso.replace(/\s*kg.*$/i, '').replace(/ →.*$/, ''); const peso = r.peso != null ? r.peso : (prev.peso || (/^\d/.test(pres) ? pres : ''));
     const reps = r.reps != null ? r.reps : (prev.reps || '');
     return `<div class="set ${r.done ? 'isdone' : ''}"><span class="num">${i + 1}</span>
       <span class="small">${esc(s.reps)}<br><span class="muted">${esc(s.peso)}${s.rir !== '' ? ' · RIR ' + esc(s.rir) : ''}${s.nota ? ' · ' + esc(s.nota) : ''}</span></span>
@@ -398,7 +404,7 @@ function hojaEjercicio(bid, en) {
 }
 function hojaCardio(id) {
   const dia = getDia(st.fecha); const n = st.entDia || dia.diaEntreno; const c = diaPlan(n)[id];
-  const ses = dia.sesion && dia.sesion.dia === n ? dia.sesion : null; const r = (ses && ses.cardio && ses.cardio[id]) || {};
+  const ses = sesDia(dia, n); const r = (ses && ses.cardio && ses.cardio[id]) || {};
   const maq = r.maquina || c.maquina;
   return `<div class="grab"></div><span class="eyebrow">${id === 'hiit' ? 'Cardio alta intensidad' : 'Cardio baja intensidad'}</span>
   <div class="row"><div class="field grow"><label for="maq">Máquina</label><select id="maq" data-cardio="maquina">${MAQUINAS.map(m => `<option ${m === maq ? 'selected' : ''}>${m}</option>`).join('')}</select></div><h2 style="align-self:flex-end">${c.duracion} min</h2></div>
@@ -601,17 +607,24 @@ function renderTimer() {
 
 /* ---------- fotos ---------- */
 let fotoMi = null;
+function subirFoto(fecha, k, blob) {
+  if (!sb || !nube.user) { toast('Foto guardada solo en el móvil (entra en tu cuenta para subirla)'); return; }
+  const ruta = nube.user.id + '/' + fecha + '-' + k + '-' + Date.now() + '.jpg';
+  sb.storage.from('fotos').upload(ruta, blob, { contentType: 'image/jpeg' }).then(({ error }) => {
+    if (error) { toast('No se pudo subir la foto: ' + error.message); return; }
+    setDia(fecha, d => { const c = d.comidas[k] = d.comidas[k] || {}; c.fotoNube = ruta; }); });
+}
 function pedirFoto(mi) { fotoMi = mi; const f = $('#foto'); f.value = ''; f.click(); }
 $('#foto').addEventListener('change', (ev) => {
   const file = ev.target.files && ev.target.files[0]; if (!file) return;
   const img = new Image(); const url = URL.createObjectURL(file);
   img.onload = () => {
-    const max = 480, r = Math.min(1, max / Math.max(img.width, img.height));
-    const c = document.createElement('canvas'); c.width = Math.round(img.width * r); c.height = Math.round(img.height * r);
-    c.getContext('2d').drawImage(img, 0, 0, c.width, c.height); URL.revokeObjectURL(url);
-    const data = c.toDataURL('image/jpeg', 0.72);
-    if (st.sheet && st.sheet.t === 'marcar') { st.sheet.foto = data; renderSheet(); }
-    else { abrir({ t: 'marcar', mi: fotoMi, foto: data }); }
+    const lienzo = (max) => { const r = Math.min(1, max / Math.max(img.width, img.height)); const c = document.createElement('canvas');
+      c.width = Math.round(img.width * r); c.height = Math.round(img.height * r); c.getContext('2d').drawImage(img, 0, 0, c.width, c.height); return c; };
+    const mini = lienzo(200).toDataURL('image/jpeg', 0.6);   // miniatura ligera para el móvil (~8 KB)
+    lienzo(1280).toBlob(blob => { URL.revokeObjectURL(url);   // la foto buena va a la nube para Jesús
+      if (st.sheet && st.sheet.t === 'marcar') { st.sheet.foto = mini; st.sheet.fotoBlob = blob; renderSheet(); }
+      else { abrir({ t: 'marcar', mi: fotoMi, foto: mini, fotoBlob: blob }); } }, 'image/jpeg', 0.8);
   };
   img.src = url;
 });
@@ -630,7 +643,13 @@ function guardarSesionInputs() { // guarda lo escrito en los campos de series y 
     const nota = $('[data-nota]'); if (nota) { d.sesion.notas = d.sesion.notas || {}; d.sesion.notas[nota.dataset.nota] = nota.value; }
   });
 }
-function asegurarSesion(n) { setDia(st.fecha, d => { if (!d.sesion || d.sesion.dia !== n) d.sesion = { dia: n, inicio: new Date().toISOString(), series: {}, cardio: {}, notas: {} }; }); }
+function asegurarSesion(n) { setDia(st.fecha, d => { // cada día de entreno conserva su sesión; cambiar de día no borra nada
+  if (d.sesion && d.sesion.dia === n) return;
+  d.sesiones = d.sesiones || {};
+  if (d.sesion) d.sesiones[d.sesion.dia] = d.sesion;
+  d.sesion = d.sesiones[n] || { dia: n, inicio: new Date().toISOString(), series: {}, cardio: {}, notas: {} };
+  delete d.sesiones[n]; }); }
+function sesDia(dia, n) { return dia.sesion && dia.sesion.dia === n ? dia.sesion : (dia.sesiones && dia.sesiones[n]) || null; }
 
 document.addEventListener('click', (ev) => {
   const t = ev.target.closest('[data-act],[data-tab]'); if (!t) return;
@@ -640,7 +659,7 @@ document.addEventListener('click', (ev) => {
   switch (a) {
     case 'dia-prev': st.fecha = addDays(st.fecha, -1); st.entDia = null; break;
     case 'dia-next': st.fecha = addDays(st.fecha, 1); st.entDia = null; break;
-    case 'tipo-dia': setDia(st.fecha, d => { d.tipo = v; if (v === 'entreno' && !d.diaEntreno) d.diaEntreno = 1; }); break;
+    case 'tipo-dia': setDia(st.fecha, d => { d.tipo = v; if (!(d.sesion && d.sesion.inicio)) delete d.diaEntreno; }); break;
     case 'menu': setDia(st.fecha, d => { d.menu = +v; }); break;
     case 'hab': setDia(st.fecha, d => { d.habitos[t.dataset.k] = !d.habitos[t.dataset.k]; }); break;
     case 'energia': setDia(st.fecha, d => { d.energia = +v; d.habitos.s_noche = true; d.habitos.movilidad = true; }); toast('Día cerrado'); break;
@@ -656,13 +675,14 @@ document.addEventListener('click', (ev) => {
       break;
     }
     case 'marcar-rapido': { const mi = +t.dataset.mi; const k = MOMENTOS[mi][0]; setDia(st.fecha, d => { d.comidas[k] = Object.assign(d.comidas[k] || {}, { estado: 'seguida' }); d.habitos['s_' + k] = d.habitos['s_' + k] || DATOS.suplementos.some(s => s.momento === k); }); toast(MOMENTOS[mi][1] + ' marcado'); break; }
-    case 'abrir-marcar': { const mi = +t.dataset.mi; const reg = getDia(st.fecha).comidas[MOMENTOS[mi][0]] || {}; abrir({ t: 'marcar', mi, estado: reg.estado || (t.textContent.includes('Fuera') ? 'fuera' : 'cambiada') }); return; }
+    case 'abrir-marcar': { const mi = +t.dataset.mi; const reg = getDia(st.fecha).comidas[MOMENTOS[mi][0]] || {}; abrir({ t: 'marcar', mi, estado: reg.estado || (t.textContent.includes('Fuera') ? 'fuera' : getDia(st.fecha).tipo === 'viaje' ? 'seguida' : 'cambiada') }); return; }
     case 'foto': pedirFoto(+t.dataset.mi); return;
     case 'estado': st.sheet.estado = v; renderSheet(); return;
     case 'adj': { const mi = +t.dataset.mi, i = +t.dataset.i, k = MOMENTOS[mi][0];
       setDia(st.fecha, d => { const c = d.comidas[k] = d.comidas[k] || {}; c.adj = c.adj || {}; c.adj[i] = Math.max(-6, Math.min(6, (c.adj[i] || 0) + (+v))); });
       if (st.sheet) { renderSheet(); render(); } else render(); return; }
     case 'guardar-comida': { const mi = +t.dataset.mi; const k = MOMENTOS[mi][0]; const s = st.sheet;
+      if (s.fotoBlob) subirFoto(st.fecha, k, s.fotoBlob);
       setDia(st.fecha, d => { const c = d.comidas[k] = d.comidas[k] || {}; c.estado = s.estado || c.estado || 'seguida'; if (s.foto !== undefined) c.foto = s.foto;
         c.nota = ($('#cnota') || {}).value || ''; if (c.estado === 'fuera') { c.kcal = ($('#fk') || {}).value || ''; c.p = ($('#fp') || {}).value || ''; }
         d.habitos['s_' + k] = d.habitos['s_' + k] || DATOS.suplementos.some(x => x.momento === k); });
@@ -674,7 +694,7 @@ document.addEventListener('click', (ev) => {
     case 'equiv': abrir({ t: 'equiv' }); return;
     case 'ent-dia': st.entDia = +v; break;
     case 'ses-ini': asegurarSesion(+v); setDia(st.fecha, d => { if (d.tipo !== 'entreno') d.tipo = 'entreno'; d.diaEntreno = +v; }); toast('Sesión iniciada'); break;
-    case 'ses-fin': setDia(st.fecha, d => { if (d.sesion) d.sesion.fin = new Date().toISOString(); }); st.timer = null; toast('Sesión terminada'); break;
+    case 'ses-fin': setDia(st.fecha, d => { if (d.sesion) d.sesion.fin = new Date().toISOString(); }); st.timer = null; clearInterval(tick); toast('Sesión terminada'); break;
     case 'ej': { guardarSesionInputs(); abrir({ t: 'ej', b: t.dataset.b, e: +t.dataset.e }); const sh = $('.sheet'); if (sh) sh.scrollTop = 0; return; }
     case 'serie': {
       const n = st.entDia || getDia(st.fecha).diaEntreno; asegurarSesion(n); guardarSesionInputs();
@@ -683,13 +703,13 @@ document.addEventListener('click', (ev) => {
       setDia(st.fecha, d => { const arr = d.sesion.series[key] = d.sesion.series[key] || []; const s = arr[i] = arr[i] || {};
         s.peso = ($('#p-' + CSS.escape(key) + '-' + i) || {}).value || s.peso || ''; s.reps = ($('#r-' + CSS.escape(key) + '-' + i) || {}).value || s.reps || '';
         s.done = !s.done; ahora = s.done; });
-      if (ahora) iniciarTimer(segs(t.dataset.desc) || 90, 'serie ' + (i + 1) + ' hecha');
+      const sd = t.dataset.desc ? segs(t.dataset.desc) : 90; if (ahora && sd) iniciarTimer(sd, 'serie ' + (i + 1) + ' hecha');
       renderSheet(); return; }
     case 't+30': if (st.timer) st.timer.end += 30000; renderTimer(); return;
     case 't-skip': st.timer = null; clearInterval(tick); renderTimer(); return;
-    case 'cardio': { const n = st.entDia || getDia(st.fecha).diaEntreno; asegurarSesion(n); abrir({ t: 'cardio', id: v }); return; }
-    case 'cardio-sens': { const id = st.sheet.id; setDia(st.fecha, d => { d.sesion.cardio[id] = Object.assign(d.sesion.cardio[id] || {}, { sensacion: +v }); }); renderSheet(); return; }
-    case 'cardio-ok': { const id = v; setDia(st.fecha, d => { const r = d.sesion.cardio[id] = d.sesion.cardio[id] || {};
+    case 'cardio': abrir({ t: 'cardio', id: v }); return;
+    case 'cardio-sens': { const id = st.sheet.id; asegurarSesion(st.entDia || getDia(st.fecha).diaEntreno); setDia(st.fecha, d => { d.sesion.cardio[id] = Object.assign(d.sesion.cardio[id] || {}, { sensacion: +v }); }); renderSheet(); return; }
+    case 'cardio-ok': { const id = v; asegurarSesion(st.entDia || getDia(st.fecha).diaEntreno); setDia(st.fecha, d => { const r = d.sesion.cardio[id] = d.sesion.cardio[id] || {};
         r.maquina = $('#maq').value; r.vatios = $('#vat').value; r.distancia = $('#dist').value; r.done = true; }); toast('Cardio guardado'); cerrar(); return; }
     case 'metodo': abrir({ t: 'metodo', k: v }); return;
     case 'ver-mas': st.verMas = true; renderSheet(); return;
@@ -702,7 +722,7 @@ document.addEventListener('click', (ev) => {
       (navigator.clipboard ? navigator.clipboard.writeText(txt) : Promise.reject()).then(() => toast('Copia copiada al portapapeles'), () => { abrir({ t: 'importar' }); setTimeout(() => { const ta = $('#imp'); if (ta) { ta.value = txt; ta.select(); } toast('Copia el texto seleccionado'); }, 50); });
       return; }
     case 'importar': abrir({ t: 'importar' }); return;
-    case 'importar-ok': try { const o = JSON.parse($('#imp').value); Object.entries(o).forEach(([k, val]) => { localStorage.setItem(k, val); const kk = k.slice(3); if (k.startsWith('fs:') && sincroniza(kk)) { marcarTs(kk, Date.now()); pendiente(kk); } }); toast('Copia restaurada'); cerrar(); } catch (e) { toast('El texto no es una copia válida'); } return;
+    case 'importar-ok': try { const o = JSON.parse($('#imp').value); if (!o || typeof o !== 'object') throw 0; Object.keys(mem).forEach(k => delete mem[k]); Object.entries(o).forEach(([k, val]) => { localStorage.setItem(k, val); const kk = k.slice(3); if (k.startsWith('fs:') && sincroniza(kk)) { marcarTs(kk, Date.now()); pendiente(kk); } }); toast('Copia restaurada'); cerrar(); } catch (e) { toast('El texto no es una copia válida'); } return;
     case 'cerrar': guardarSesionInputs(); cerrar(); return;
     case 'ir-cuenta': st.tab = 'plan'; st.sheet = null; render(); setTimeout(() => { const c = document.getElementById('cuenta'); if (c) c.scrollIntoView({ behavior: 'smooth' }); }, 30); return;
     case 'login-entrar': case 'login-crear': {
