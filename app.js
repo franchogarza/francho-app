@@ -64,6 +64,11 @@ const mem = {};
 const load = (k, def) => { try { const v = localStorage.getItem('fs:' + k); if (v != null) return JSON.parse(v); } catch (e) {} return k in mem ? mem[k] : def; };
 const save = (k, v) => { mem[k] = v; try { localStorage.setItem('fs:' + k, JSON.stringify(v)); } catch (e) { toast('No se pudo guardar en este navegador'); } if (sincroniza(k)) { marcarTs(k, Date.now()); pendiente(k); } };
 
+/* ---------- estilo visual ---------- */
+function estiloActual() { return document.documentElement.getAttribute('data-estilo') || 'sport'; }
+function aplicarEstilo(e) { document.documentElement.setAttribute('data-estilo', e); const m = document.querySelector('meta[name=theme-color]'); if (m) m.setAttribute('content', e === 'sport' ? '#000000' : '#F4F2EC'); }
+aplicarEstilo(load('estilo', 'sport'));
+
 /* ---------- nube (Supabase) ---------- */
 const SB_URL = 'https://jkfrlydkoyppmqmfcdnm.supabase.co';
 const SB_KEY = 'sb_publishable_swEwoCOm6mnZRPFS2Xnpyw_YpV58tMP';
@@ -106,6 +111,7 @@ async function bajar() {
       if ((!f || t > Date.parse(f.actualizado)) && !P.includes(k)) P.push(k); });
     lsSet('_pend', JSON.stringify(P));
     nube.ultima = new Date();
+    if (cambios) aplicarEstilo(load('estilo', 'sport'));
     if (cambios && !st.sheet) render();
     await subir();
     nube.estado = pendientes().length ? 'subiendo' : 'ok';
@@ -208,9 +214,9 @@ function toast(msg) { let t = $('.toast'); if (!t) { t = document.createElement(
 const ring = (val, max, color, label, sub, act) => {
   const L = 239, f = Math.max(0, Math.min(val / max, 1)) * L;
   return `<button class="ring" ${act ? `data-act="${act}"` : 'tabindex="-1"'} aria-label="${esc(label)}">
-    <svg viewBox="0 0 92 92" aria-hidden="true"><circle cx="46" cy="46" r="38" fill="none" stroke="var(--soft)" stroke-width="11"/>
+    <svg viewBox="0 0 92 92" aria-hidden="true" style="color:${color}"><circle class="trk" cx="46" cy="46" r="38" fill="none" stroke="var(--soft)" stroke-width="11"/>
     ${f > 0 ? `<circle cx="46" cy="46" r="38" fill="none" stroke="${color}" stroke-width="11" stroke-linecap="round" stroke-dasharray="${f.toFixed(0)} ${L}" transform="rotate(-90 46 46)"/>` : ''}
-    <text x="46" y="53" text-anchor="middle" font-family="Barlow Condensed, sans-serif" font-size="21" font-weight="700" fill="var(--ink)">${esc(sub)}</text></svg>
+    <text x="46" y="53" text-anchor="middle" font-family="Barlow Condensed, sans-serif" font-size="21" font-weight="800" fill="var(--ink)">${esc(sub)}</text></svg>
     <span class="small"><b>${esc(label)}</b></span></button>`;
 };
 const segTipo = (dia, act) => `<div class="seg" role="group" aria-label="Tipo de día">${TIPOS.map(([k, n]) =>
@@ -269,9 +275,9 @@ function vistaHoy() {
   ${avisoNube}
   ${segTipo(dia, 'tipo-dia')}
   <div class="card rings" style="padding:10px 4px">
-    ${ring(dia.pasos || 0, OBJ.pasos, 'var(--accent)', 'Pasos', dia.pasos ? (dia.pasos / 1000).toFixed(1).replace('.', ',') + 'k' : '—', 'pasos')}
-    ${ring(tot.p, OBJ.p, protColor(tot.p), 'Proteína / 170', fmt(tot.p) + ' g')}
-    ${ring(hechos, hl.length, 'var(--good)', 'Hábitos', hechos + '/' + hl.length)}
+    ${ring(dia.pasos || 0, OBJ.pasos, 'var(--r-pasos, var(--accent))', 'Pasos', dia.pasos ? (dia.pasos / 1000).toFixed(1).replace('.', ',') + 'k' : '—', 'pasos')}
+    ${ring(tot.p, OBJ.p, 'var(--r-prot, ' + protColor(tot.p) + ')', 'Proteína / 170', fmt(tot.p) + ' g')}
+    ${ring(hechos, hl.length, 'var(--r-hab, var(--good))', 'Hábitos', hechos + '/' + hl.length)}
   </div>
   ${ahora}
   <div class="agenda">${ag.map(x => `<button class="${x.done ? 'done' : x === now ? 'now' : ''}" data-act="agenda" data-k="${x.k}" ${x.mi != null ? `data-mi="${x.mi}"` : ''}>
@@ -515,6 +521,7 @@ function vistaPlan() {
     <div><b>Moverse ·</b> 10–15.000 pasos, de pie cada 30 min, sentadillas al despertar, movilidad antes de dormir.</div>
     <div><b>Cenas ·</b> ligeras, proteína y verdura cocinada, sin salsas, lácteos ni postre.</div></div></div>
   <div class="card"><span class="eyebrow">Métodos de entreno</span><div class="row wrap">${Object.keys(DATOS.metodos).map(k => `<button class="chip" data-act="metodo" data-v="${esc(k)}">${esc(k)} ⓘ</button>`).join('')}</div></div>
+  <div class="card"><span class="eyebrow">Estilo de la app</span><div class="seg" role="group" aria-label="Estilo">${[['sport', 'Sport'], ['clasico', 'Clásico']].map(([k, n]) => `<button data-act="estilo" data-v="${k}" aria-pressed="${estiloActual() === k}">${n}</button>`).join('')}</div></div>
   <div class="card" id="cuenta"><span class="eyebrow">Tu cuenta y tus datos</span><span class="small" id="nube-estado">${textoNube()}</span>
     ${cuentaHtml()}
     <span class="tiny muted">Copia manual (por si acaso):</span>
@@ -699,6 +706,7 @@ document.addEventListener('click', (ev) => {
         toast('Conectado'); });
       return; }
     case 'sync': bajar(); return;
+    case 'estilo': aplicarEstilo(v); save('estilo', v); break;
     case 'logout': sb.auth.signOut().then(() => { nube.user = null; render(); }); return;
   }
   render();
