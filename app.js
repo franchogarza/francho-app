@@ -115,6 +115,7 @@ async function bajar() {
     nube.ultima = new Date();
     if (cambios) aplicarEstilo(load('estilo', 'sport'));
     if (cambios && !st.sheet) render();
+    await bajarSalud();
     await subir();
     nube.estado = pendientes().length ? 'subiendo' : 'ok';
   } catch (e) { nube.estado = 'error'; nube.err = e.message || String(e); clearTimeout(flushT); flushT = setTimeout(bajar, 30000); }
@@ -124,6 +125,14 @@ function borrarLocales() { // otra cuenta en este móvil: no mezclar datos
   try { const ks = []; for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && k.startsWith('fs:') && k !== 'fs:tab' && k !== 'fs:estilo') ks.push(k); } ks.forEach(k => localStorage.removeItem(k)); } catch (e) {}
   Object.keys(mem).forEach(k => delete mem[k]);
 }
+async function bajarSalud() { // datos del Apple Watch que manda el Atajo (tabla salud_diaria)
+  try { const { data, error } = await sb.from('salud_diaria').select('fecha,pasos,kcal_activas,min_pie,sueno_min,vfc,fc_reposo,recibido').eq('alumno', nube.user.id).gte('fecha', addDays(hoyISO(), -60));
+    try { const r = await sb.from('token_salud').select('token').eq('alumno', nube.user.id).maybeSingle(); if (r.data && r.data.token) lsSet('_tokenSalud', r.data.token); } catch (e) {}
+    if (error || !data) return; const S = {}; data.forEach(r => { S[r.fecha] = r; }); lsSet('_salud', JSON.stringify(S)); delete mem._salud;
+    if (!st.sheet) render(); } catch (e) {}
+}
+const saludDe = (f) => { try { return (JSON.parse(lsGet('_salud') || '{}'))[f] || null; } catch (e) { return null; } };
+const pasosDe = (dia, f) => dia.pasos || ((saludDe(f) || {}).pasos) || 0;
 function pintarNube() { const el = document.getElementById('nube-estado'); if (el) el.innerHTML = textoNube(); }
 function textoNube() {
   if (!sb) return 'Sin conexión con la base de datos (librería no cargada).';
@@ -344,14 +353,16 @@ function vistaHoy() {
   ${avisoNube}
   ${segTipo(dia, 'tipo-dia')}
   <div class="card rings" style="padding:10px 4px">
-    ${ring(dia.pasos || 0, OBJ.pasos, 'var(--r-pasos, var(--accent))', 'Pasos', dia.pasos ? (dia.pasos / 1000).toFixed(1).replace('.', ',') + 'k' : '—', 'pasos')}
+    ${ring(pasosDe(dia, st.fecha), OBJ.pasos, 'var(--r-pasos, var(--accent))', 'Pasos', pasosDe(dia, st.fecha) ? (pasosDe(dia, st.fecha) / 1000).toFixed(1).replace('.', ',') + 'k' : '—', 'pasos')}
     ${ring(tot.p, OBJ.p, 'var(--r-prot, ' + protColor(tot.p) + ')', 'Proteína / 170', fmt(tot.p) + ' g')}
     ${ring(hechos, hl.length, 'var(--r-hab, var(--good))', 'Hábitos', hechos + '/' + hl.length)}
   </div>
   ${ahora}
   <div class="agenda">${ag.map(x => `<button class="${x.done ? 'done' : x === now ? 'now' : ''}" data-act="agenda" data-k="${x.k}" ${x.mi != null ? `data-mi="${x.mi}"` : ''}>
     <span class="t">${x.h}</span><span class="txt grow">${esc(x.t)}</span>${x.done ? '<span class="tick">✓</span>' : x === now ? '<span class="tiny" style="color:var(--accent-ink);font-weight:700">ahora</span>' : ''}</button>`).join('')}</div>
-  <p class="tiny muted">Los pasos llegarán solos del Watch en la fase 2. Mientras, toca el anillo para apuntarlos.</p>`;
+  ${(() => { const w = saludDe(st.fecha); if (!w) return '<p class="tiny muted">Los datos del Watch llegan con el Atajo (Plan → Apple Watch). Mientras, toca el anillo de pasos para apuntarlos.</p>';
+    const h = w.sueno_min ? Math.floor(w.sueno_min / 60) + ' h ' + String(w.sueno_min % 60).padStart(2, '0') : null;
+    return `<div class="card"><span class="eyebrow">Apple Watch · ${new Date(w.recibido).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })}</span><div class="row wrap" style="gap:6px">${[h && ['Sueño', h], w.kcal_activas && ['Activas', fmt(w.kcal_activas) + ' kcal'], w.min_pie && ['Ejercicio', w.min_pie + ' min'], w.fc_reposo && ['FC reposo', w.fc_reposo + ' ppm'], w.vfc && ['VFC', Math.round(w.vfc) + ' ms']].filter(Boolean).map(([k, v]) => `<span class="chip">${k} <b>${v}</b></span>`).join('')}</div></div>`; })()}`;
 }
 const REGLAS_PLATO = {
   desayuno: 'Carbohidrato + proteína + grasa con comida real. Sin bollería ni cereales azucarados.',
@@ -712,10 +723,40 @@ function vistaPlan() {
     <div><b>Cenas ·</b> ligeras, proteína y verdura cocinada, sin salsas, lácteos ni postre.</div></div></div>
   <div class="card"><span class="eyebrow">Métodos de entreno</span><div class="row wrap">${Object.keys(DATOS.metodos).map(k => `<button class="chip" data-act="metodo" data-v="${esc(k)}">${esc(k)} ⓘ</button>`).join('')}</div></div>
   <div class="card"><span class="eyebrow">Estilo de la app</span><div class="seg" role="group" aria-label="Estilo">${[['sport', 'Sport'], ['clasico', 'Clásico']].map(([k, n]) => `<button data-act="estilo" data-v="${k}" aria-pressed="${estiloActual() === k}">${n}</button>`).join('')}</div></div>
+  <div class="card"><span class="eyebrow">Apple Watch · datos automáticos</span>${relojHtml()}</div>
   <div class="card" id="cuenta"><span class="eyebrow">Tu cuenta y tus datos</span><span class="small" id="nube-estado">${textoNube()}</span>
     ${cuentaHtml()}
     <span class="tiny muted">Copia manual (por si acaso):</span>
     <div class="row wrap"><button class="btn grow" data-act="exportar">Copiar copia de seguridad</button><button class="btn grow" data-act="importar">Restaurar copia</button></div></div>`;
+}
+function relojHtml() {
+  if (!sb || !nube.user) return '<span class="small muted">Primero entra en tu cuenta (más abajo).</span>';
+  const tk = lsGet('_tokenSalud'); const w = saludDe(hoyISO()) || saludDe(addDays(hoyISO(), -1));
+  return `<span class="small">${w ? '✓ Último envío: ' + new Date(w.recibido).toLocaleString('es-ES', { weekday: 'short', hour: '2-digit', minute: '2-digit' }) : 'Un Atajo del iPhone manda cada noche pasos, calorías, ejercicio, sueño, FC en reposo y VFC.'}</span>
+    <div class="row wrap"><button class="btn grow" data-act="reloj-guia">Cómo crear el Atajo</button>${tk ? '' : '<button class="btn primary grow" data-act="reloj-token">Generar mi clave</button>'}</div>`;
+}
+const SB_RPC = SB_URL + '/rest/v1/rpc/registrar_salud';
+function hojaReloj() {
+  const tk = lsGet('_tokenSalud') || '— genera primero tu clave —';
+  const bloque = (titulo, txt) => `<div class="card"><div class="row between"><span class="eyebrow">${titulo}</span><button class="chip" data-act="copiar" data-v="${esc(txt)}">Copiar</button></div><code class="small" style="word-break:break-all">${esc(txt)}</code></div>`;
+  const paso = (n, t) => `<div class="row" style="align-items:flex-start"><b class="num" style="font-size:22px;width:26px">${n}</b><span class="small grow">${t}</span></div>`;
+  return `<div class="grab"></div><h2>Atajo «FRANX Salud»</h2><span class="small muted">Se crea una vez en la app Atajos del iPhone (10 minutos). Después se ejecuta solo cada noche.</span>
+  ${bloque('Tu clave (privada, no la compartas)', tk)}
+  ${bloque('URL', SB_RPC)}
+  ${bloque('Cabecera apikey', SB_KEY)}
+  <div class="card col">
+  ${paso(1, 'Abre <b>Atajos</b> → pestaña Atajos → <b>+</b>. Ponle de nombre <b>FRANX Salud</b>.')}
+  ${paso(2, 'Añade <b>Buscar muestras de salud</b>: Tipo <b>Pasos</b>, filtro <b>Fecha de inicio · es hoy</b>. Luego <b>Calcular estadísticas</b> → <b>Suma</b>. Toca el resultado y renómbralo <b>Pasos</b>.')}
+  ${paso(3, 'Repite el paso 2 con <b>Energía activa</b> (Suma → renombrar <b>Activas</b>) y con <b>Minutos de ejercicio</b> (Suma → <b>Ejercicio</b>).')}
+  ${paso(4, 'Repite con <b>Frecuencia cardiaca en reposo</b> y con <b>Variabilidad de la frecuencia cardiaca</b>, pero eligiendo <b>Media</b> (→ <b>FCreposo</b> y <b>VFC</b>).')}
+  ${paso(5, 'Sueño (opcional): <b>Buscar muestras de salud</b> · Tipo <b>Análisis del sueño</b> · Valor <b>no es En cama</b> · Fecha de inicio <b>en las últimas 18 horas</b> → <b>Calcular estadísticas</b> · <b>Suma</b> → <b>Convertir medida</b> a <b>horas</b> → renombrar <b>Sueño</b>. Si te da guerra, sáltalo.')}
+  ${paso(6, 'Añade <b>Fecha actual</b> → <b>Formatear fecha</b> · Formato <b>Personalizado</b> · <code>yyyy-MM-dd</code> → renombrar <b>Hoy</b>.')}
+  ${paso(7, 'Añade <b>Diccionario</b> con: <code>pasos</code>=Pasos, <code>kcal_activas</code>=Activas, <code>min_ejercicio</code>=Ejercicio, <code>fc_reposo</code>=FCreposo, <code>vfc</code>=VFC, <code>sueno_h</code>=Sueño (todos de tipo Número).')}
+  ${paso(8, 'Añade <b>Obtener contenido de URL</b>: URL de arriba · Método <b>POST</b> · Cabeceras: <code>apikey</code> = la de arriba y <code>Content-Type</code> = <code>application/json</code> · Cuerpo <b>JSON</b> con <code>p_token</code> (Texto = tu clave), <code>p_fecha</code> (Texto = Hoy) y <code>p_datos</code> (Diccionario = el del paso 7).')}
+  ${paso(9, 'Pruébalo con ▶. Debe responder <code>"ok …"</code>. Abre FRANX: en Hoy verás los datos del Watch.')}
+  ${paso(10, 'Pestaña <b>Automatización</b> → <b>+</b> → <b>Hora del día</b> · <b>23:00</b> · Diariamente · <b>Ejecutar inmediatamente</b> → elige FRANX Salud. Puedes lanzarlo también a mano cuando quieras: no duplica, actualiza el día.')}
+  </div>
+  <button class="btn block" data-act="cerrar">Cerrar</button>`;
 }
 function cuentaHtml() {
   if (!sb) return '';
@@ -750,6 +791,7 @@ function renderSheet() {
   else if (s.t === 'platos') html = hojaPlatos();
   else if (s.t === 'equiv') html = hojaEquiv();
   else if (s.t === 'compra') html = hojaCompra();
+  else if (s.t === 'reloj') html = hojaReloj();
   else if (s.t === 'linea') html = hojaLinea(s.mi, s.i);
   else if (s.t === 'anadir') html = hojaAnadir(s.mi);
   else if (s.t === 'pesarme') html = hojaPesarme();
@@ -864,6 +906,11 @@ document.addEventListener('click', (ev) => {
     case 'foto': pedirFoto(+t.dataset.mi); return;
     case 'eq-modo': st.sheet.modo = v; renderSheet(); return;
     case 'compra': abrir({ t: 'compra' }); return;
+    case 'reloj-guia': abrir({ t: 'reloj' }); return;
+    case 'reloj-token': { const b = new Uint8Array(24); crypto.getRandomValues(b); const tk = Array.from(b, x => x.toString(16).padStart(2, '0')).join('');
+      t.disabled = true; sb.from('token_salud').upsert({ alumno: nube.user.id, token: tk }, { onConflict: 'alumno' }).then(({ error }) => { t.disabled = false;
+        if (error) { toast('No se pudo crear la clave: ' + error.message); return; } lsSet('_tokenSalud', tk); toast('Clave creada'); render(); abrir({ t: 'reloj' }); }); return; }
+    case 'copiar': (navigator.clipboard ? navigator.clipboard.writeText(t.dataset.v) : Promise.reject()).then(() => toast('Copiado'), () => toast('No se pudo copiar')); return;
     case 'compra-modo': st.sheet.modo = v; renderSheet(); return;
     case 'compra-check': { const k = t.dataset.k; const h = Object.assign({}, load(k, {})); h[v] = !h[v]; save(k, h); renderSheet(); return; }
     case 'compra-copiar': { const dias = diasCompra(st.sheet.modo || 'semana'); const h = load('compra:' + dias[0], {}); const { items } = listaCompra(dias);
