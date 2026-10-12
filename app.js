@@ -16,29 +16,6 @@ const EXTRAS = [
   { id: 'huevos', txt: '+ 2 huevos', p: 13, c: 1, g: 10, kcal: 150 },
   { id: 'pollo', txt: '+ 1 palma de pollo', p: 24, c: 0, g: 3, kcal: 130 }
 ];
-// Reglas para ajustar raciones de los menús de Jesús (+/−). Valores por paso, aproximados.
-const REGLAS = [
-  { re: /palma.*salm[oó]n|salm[oó]n/i, u: '½ palma', p: 11, c: 0, g: 6, kcal: 95 },
-  { re: /palma/i, u: '½ palma', p: 12, c: 0, g: 1.5, kcal: 65 },
-  { re: /taza/i, u: '½ taza', p: 2, c: 22, g: 0.5, kcal: 100 },
-  { re: /AOVE/i, u: '1 cdta', p: 0, c: 0, g: 4.5, kcal: 40 },
-  { re: /rebanada/i, u: '1 rebanada', p: 3.5, c: 15, g: 1, kcal: 80 },
-  { re: /huevo/i, u: '1 huevo', p: 6.5, c: 0.5, g: 5, kcal: 75 },
-  { re: /yogur/i, u: '1 bol', p: 10, c: 4, g: 0, kcal: 90 },
-  { re: /aguacate/i, u: '⅓ aguacate', p: 1, c: 2, g: 7, kcal: 75 },
-  { re: /at[uú]n/i, u: '1 lata', p: 17, c: 0, g: 1, kcal: 75 },
-  { re: /jam[oó]n/i, u: '2 lonchas', p: 6, c: 0, g: 2, kcal: 45 },
-  { re: /queso fresco/i, u: '½ tarrina', p: 8, c: 3, g: 1, kcal: 60 },
-  { re: /patata|boniato/i, u: '½ unidad', p: 2, c: 18, g: 0, kcal: 80 },
-  { re: /manzana|naranja|pl[aá]tano/i, u: '1 pieza', p: 1, c: 20, g: 0, kcal: 85 },
-  { re: /nueces|cacahuete/i, u: '1 porción', p: 2, c: 2, g: 9, kcal: 100 },
-  { re: /leche/i, u: '1 vaso', p: 8, c: 12, g: 4, kcal: 115 },
-  { re: /avena|copos/i, u: '2 cdas', p: 2, c: 10, g: 1, kcal: 60 },
-  { re: /pesto/i, u: '1 cda', p: 1, c: 0, g: 7, kcal: 70 }
-];
-const regla = (txt) => { let best = null, bi = Infinity; // la coincidencia que aparece antes en el texto (empate: orden de la lista)
-  REGLAS.forEach(r => { const m = r.re.exec(txt); if (m && m.index < bi) { bi = m.index; best = r; } }); return best; };
-
 /* ---------- utilidades ---------- */
 const $ = (s, el = document) => el.querySelector(s);
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -60,75 +37,131 @@ const segs = (txt) => { // "2´" "20´´" "1´ y siguiente" → segundos
   return 0;
 };
 
-/* ---------- almacenamiento local (fase 1) ---------- */
-const mem = {};
-const load = (k, def) => { if (k in mem) return mem[k]; try { const v = localStorage.getItem('fs:' + k); if (v != null) return JSON.parse(v); } catch (e) {} return def; };
-const save = (k, v) => { mem[k] = v; try { localStorage.setItem('fs:' + k, JSON.stringify(v)); } catch (e) { toast('⚠ Memoria del móvil llena: avisa a Claude'); } if (sincroniza(k)) { marcarTs(k, Date.now()); pendiente(k); } };
+/* ---------- almacenamiento local, separado por cuenta ----------
+   Cada cuenta guarda sus datos en «fs:u:<uid>:clave»; sin cuenta, en «fs:clave». Estilo y pestaña son globales.
+   Metadatos internos (no se sincronizan ni se exportan): _pend (cola), _op:k (contador de cambios), _rev:k (revisión
+   del servidor sobre la que se editó), _base:k (última versión acordada con el servidor), _conf:k (conflictos). */
+const mem = {}; const memPend = new Set();
+const GLOBALES = ['tab', 'estilo'];
+let NS = 'fs:'; try { const u0 = localStorage.getItem('fs:_ultimoUid'); if (u0) NS = 'fs:u:' + u0 + ':'; } catch (e) {}
+const kLS = (k) => (GLOBALES.includes(k) ? 'fs:' : NS) + k;
+function lsGet(k) { try { return localStorage.getItem(kLS(k)); } catch (e) { return null; } }
+function lsSet(k, v) { try { localStorage.setItem(kLS(k), v); return true; } catch (e) { return false; } }
+function lsDel(k) { try { localStorage.removeItem(kLS(k)); } catch (e) {} }
+const load = (k, def) => { if (k in mem) return mem[k]; try { const v = localStorage.getItem(kLS(k)); if (v != null) return JSON.parse(v); } catch (e) {} return def; };
+function sincroniza(k) { return !GLOBALES.includes(k) || k === 'estilo'; }
+const esInterna = (k) => k.startsWith('_');
+const save = (k, v) => {
+  mem[k] = v; const ok = lsSet(k, JSON.stringify(v));
+  if (!ok) toast('⚠ Memoria del móvil llena: el cambio está solo en pantalla. Avisa a Claude');
+  if (sincroniza(k) && !esInterna(k)) { lsSet('_op:' + k, String(opDe(k) + 1)); if (!ok) mem['_op:' + k] = opDe(k) + 1; pendiente(k); }
+};
+const opDe = (k) => +(mem['_op:' + k] || lsGet('_op:' + k) || 0);
+function clavesNS() { const out = []; try { for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && k.startsWith(NS) && (NS !== 'fs:' || !k.startsWith('fs:u:'))) { const c = k.slice(NS.length); if (!esInterna(c) && !GLOBALES.includes(c)) out.push(c); } } } catch (e) {} return out; }
 
 /* ---------- estilo visual ---------- */
 function estiloActual() { return document.documentElement.getAttribute('data-estilo') || 'sport'; }
-function aplicarEstilo(e) { document.documentElement.setAttribute('data-estilo', e); const m = document.querySelector('meta[name=theme-color]'); if (m) m.setAttribute('content', e === 'sport' ? '#000000' : '#F4F2EC'); }
+function aplicarEstilo(e) { e = e === 'clasico' ? 'clasico' : 'sport'; document.documentElement.setAttribute('data-estilo', e); const m = document.querySelector('meta[name=theme-color]'); if (m) m.setAttribute('content', e === 'sport' ? '#000000' : '#F4F2EC'); }
 aplicarEstilo(load('estilo', 'sport'));
 
-/* ---------- nube (Supabase) ---------- */
+/* ---------- nube (Supabase): cola duradera + escritura condicionada a la revisión ---------- */
 const SB_URL = 'https://jkfrlydkoyppmqmfcdnm.supabase.co';
 const SB_KEY = 'sb_publishable_swEwoCOm6mnZRPFS2Xnpyw_YpV58tMP';
 let sb = null; try { if (window.supabase) sb = window.supabase.createClient(SB_URL, SB_KEY, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true } }); } catch (e) {}
-const nube = { user: null, email: null, estado: 'local', ultima: null, ocupado: false };
-function sincroniza(k) { return k !== 'tab' && !k.startsWith('_'); }
-function lsGet(k) { try { return localStorage.getItem('fs:' + k); } catch (e) { return null; } }
-function lsSet(k, v) { try { localStorage.setItem('fs:' + k, v); } catch (e) {} }
-function marcarTs(k, t) { lsSet('_ts:' + k, String(t)); }
-function tsDe(k) { return +(lsGet('_ts:' + k) || 0); }
-function pendientes() { try { return JSON.parse(lsGet('_pend') || '[]'); } catch (e) { return []; } }
+const nube = { user: null, email: null, estado: 'local', ultima: null, gen: 0, subiendo: false, bajando: false, rpc: true, err: '' };
+function pendientes() { let P = []; try { P = JSON.parse(lsGet('_pend') || '[]'); } catch (e) {} memPend.forEach(k => { if (!P.includes(k)) P.push(k); }); return P; }
+function setPend(P) { if (!lsSet('_pend', JSON.stringify(P))) { memPend.clear(); P.forEach(k => memPend.add(k)); } else memPend.clear(); }
 let flushT = null;
-function pendiente(k) { const P = pendientes(); if (!P.includes(k)) { P.push(k); lsSet('_pend', JSON.stringify(P)); } clearTimeout(flushT); flushT = setTimeout(subir, 1200); }
-function clavesLocales() { const out = []; try { for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && k.startsWith('fs:') && sincroniza(k.slice(3))) out.push(k.slice(3)); } } catch (e) {} return out; }
+function programar(ms) { clearTimeout(flushT); flushT = setTimeout(subir, ms); }
+function pendiente(k) { const P = pendientes(); if (!P.includes(k)) { P.push(k); setPend(P); } programar(1200); }
+const igual = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+const esObj = (x) => x && typeof x === 'object' && !Array.isArray(x);
+function fusionar(base, local, remoto, ruta, choques) { // fusión a tres bandas por campos; si ambos cambian lo mismo, gana local y se guarda el choque
+  if (igual(local, remoto)) return local;
+  if (igual(local, base)) return remoto;
+  if (igual(remoto, base)) return local;
+  if (esObj(local) && esObj(remoto)) { const out = {}; const B = esObj(base) ? base : {};
+    new Set([...Object.keys(local), ...Object.keys(remoto), ...Object.keys(B)]).forEach(c => { const v = fusionar(B[c], local[c], remoto[c], ruta + '.' + c, choques); if (v !== undefined) out[c] = v; });
+    return out; }
+  choques.push(ruta); return local;
+}
 async function subir() {
-  if (!sb || !nube.user || !navigator.onLine) return;
-  const P = pendientes(); if (!P.length) { nube.estado = 'ok'; pintarNube(); return; }
-  P.forEach(k => { if (!tsDe(k)) marcarTs(k, Date.now()); });
-  const filas = P.map(k => ({ alumno: nube.user.id, clave: k, valor: JSON.parse(lsGet(k) || 'null'), actualizado: new Date(tsDe(k)).toISOString() }));
-  nube.estado = 'subiendo'; pintarNube();
-  const { error } = await sb.from('registro').upsert(filas, { onConflict: 'alumno,clave' });
-  if (error) { nube.estado = 'error'; nube.err = error.message; pintarNube(); clearTimeout(flushT); flushT = setTimeout(subir, 30000); return; }
-  const enviados = new Map(filas.map(f => [f.clave, f.actualizado]));
-  lsSet('_pend', JSON.stringify(pendientes().filter(k => enviados.get(k) !== new Date(tsDe(k)).toISOString())));
-  nube.estado = pendientes().length ? 'subiendo' : 'ok'; nube.ultima = new Date(); pintarNube();
-  if (pendientes().length) { clearTimeout(flushT); flushT = setTimeout(subir, 1200); }
+  if (!sb || !nube.user) return;
+  if (nube.subiendo) { nube.otraVez = true; return; }
+  if (!navigator.onLine) { nube.estado = 'offline'; pintarNube(); return; }
+  const uid = nube.user.id, gen = nube.gen; nube.subiendo = true; nube.otraVez = false;
+  try {
+    for (let vuelta = 0; vuelta < 50; vuelta++) {
+      const P = pendientes(); if (!P.length) break;
+      const k = P[0]; const op = opDe(k); const valor = load(k, null); const rev = +(lsGet('_rev:' + k) || 0);
+      nube.estado = 'subiendo'; pintarNube();
+      let res;
+      if (nube.rpc) {
+        const r = await sb.rpc('guardar_registro', { p_clave: k, p_valor: valor, p_rev: rev });
+        if (r.error && /guardar_registro|PGRST202|function/i.test(r.error.message + (r.error.code || ''))) nube.rpc = false;
+        else if (r.error) throw r.error; else res = r.data;
+      }
+      if (!nube.rpc) { const r = await sb.from('registro').upsert({ alumno: uid, clave: k, valor, actualizado: new Date().toISOString() }, { onConflict: 'alumno,clave' }); if (r.error) throw r.error; res = { ok: true, rev: rev + 1 }; }
+      if (!nube.user || nube.user.id !== uid || nube.gen !== gen) return;   // cambió la cuenta: no aplicar nada
+      if (res.ok) {
+        lsSet('_rev:' + k, String(res.rev)); lsSet('_base:' + k, JSON.stringify(valor));
+        if (opDe(k) === op) setPend(pendientes().filter(x => x !== k));
+      } else {   // otra versión llegó antes: fusionar y volver a intentar sobre la revisión nueva
+        const base = JSON.parse(lsGet('_base:' + k) || 'null'); const choques = [];
+        const fus = fusionar(base, valor, res.valor, k, choques);
+        if (choques.length) lsSet('_conf:' + k, JSON.stringify({ fecha: new Date().toISOString(), local: valor, remoto: res.valor, campos: choques }));
+        lsSet('_rev:' + k, String(res.rev)); lsSet('_base:' + k, JSON.stringify(res.valor));
+        if (opDe(k) === op) { mem[k] = fus; lsSet(k, JSON.stringify(fus)); if (igual(fus, res.valor)) setPend(pendientes().filter(x => x !== k)); }
+        if (!st.sheet) render();
+      }
+    }
+    nube.estado = pendientes().length ? 'subiendo' : 'ok'; nube.err = ''; if (!pendientes().length) nube.ultima = new Date();
+  } catch (e) { nube.estado = 'error'; nube.err = (e && e.message) || String(e); programar(30000); }
+  finally { nube.subiendo = false; pintarNube(); if (nube.otraVez && nube.estado !== 'error') programar(300); }
 }
 async function bajar() {
-  if (!sb || !nube.user || nube.ocupado) return;
-  nube.ocupado = true; nube.estado = 'bajando'; pintarNube();
+  if (!sb || !nube.user || nube.bajando) return;
+  const uid = nube.user.id, gen = nube.gen; nube.bajando = true; if (nube.estado !== 'error') { nube.estado = 'bajando'; pintarNube(); }
   try {
     let filas = [], desde = 0;
-    for (;;) { const { data, error } = await sb.from('registro').select('clave,valor,actualizado').eq('alumno', nube.user.id).range(desde, desde + 999);
+    for (;;) { const { data, error } = await sb.from('registro').select('*').eq('alumno', uid).order('clave').range(desde, desde + 999);
       if (error) throw error; filas = filas.concat(data); if (data.length < 1000) break; desde += 1000; }
-    const remotas = new Map(filas.map(f => [f.clave, f]));
-    let cambios = 0;
-    remotas.forEach((f, k) => { const tr = Date.parse(f.actualizado); if (tr > tsDe(k)) { lsSet(k, JSON.stringify(f.valor)); marcarTs(k, tr); delete mem[k]; cambios++; } });
-    const P = pendientes();
-    clavesLocales().forEach(k => { const f = remotas.get(k); let t = tsDe(k);
-      if (!t) { t = Date.now(); marcarTs(k, t); }
-      if ((!f || t > Date.parse(f.actualizado)) && !P.includes(k)) P.push(k); });
-    lsSet('_pend', JSON.stringify(P));
-    nube.ultima = new Date();
+    if (!nube.user || nube.user.id !== uid || nube.gen !== gen) return;
+    const P = pendientes(); const remotas = new Map(filas.map(f => [f.clave, f])); let cambios = 0;
+    remotas.forEach((f, k) => { if (!sincroniza(k) && !GLOBALES.includes(k)) return; const rv = f.rev || 1;
+      if (P.includes(k)) return;   // tiene cambios propios sin subir: lo resuelve subir() con la fusión
+      if (rv > +(lsGet('_rev:' + k) || 0) || !igual(f.valor, load(k, undefined))) {
+        if (GLOBALES.includes(k)) { lsSet(k, JSON.stringify(f.valor)); delete mem[k]; }
+        else { lsSet(k, JSON.stringify(f.valor)); delete mem[k]; }
+        lsSet('_rev:' + k, String(rv)); lsSet('_base:' + k, JSON.stringify(f.valor)); cambios++; } });
+    clavesNS().forEach(k => { if (!remotas.has(k) && !P.includes(k)) P.push(k); });   // datos que solo están en el móvil
+    setPend(P);
     if (cambios) aplicarEstilo(load('estilo', 'sport'));
     if (cambios && !st.sheet) render();
-    await bajarSalud();
-    await subir();
-    nube.estado = pendientes().length ? 'subiendo' : 'ok';
-  } catch (e) { nube.estado = 'error'; nube.err = e.message || String(e); clearTimeout(flushT); flushT = setTimeout(bajar, 30000); }
-  nube.ocupado = false; pintarNube();
+    await bajarSalud(uid, gen);
+    nube.ultima = new Date(); if (nube.estado === 'bajando') nube.estado = 'ok';
+  } catch (e) { nube.estado = 'error'; nube.err = (e && e.message) || String(e); clearTimeout(flushT); flushT = setTimeout(bajar, 30000); }
+  finally { nube.bajando = false; pintarNube(); }
+  await subir();
 }
-function borrarLocales() { // otra cuenta en este móvil: no mezclar datos
-  try { const ks = []; for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && k.startsWith('fs:') && k !== 'fs:tab' && k !== 'fs:estilo') ks.push(k); } ks.forEach(k => localStorage.removeItem(k)); } catch (e) {}
-  Object.keys(mem).forEach(k => delete mem[k]);
+function cambiarEspacio(uid) { // pasa a los datos de esa cuenta (o a los de «sin cuenta» si uid es null)
+  NS = uid ? 'fs:u:' + uid + ':' : 'fs:'; Object.keys(mem).forEach(k => delete mem[k]); memPend.clear(); nube.gen++;
+  try { if (uid) localStorage.setItem('fs:_ultimoUid', uid); else localStorage.removeItem('fs:_ultimoUid'); } catch (e) {}
 }
-async function bajarSalud() { // datos del Apple Watch que manda el Atajo (tabla salud_diaria)
-  try { const { data, error } = await sb.from('salud_diaria').select('fecha,pasos,kcal_activas,min_pie,sueno_min,vfc,fc_reposo,recibido').eq('alumno', nube.user.id).gte('fecha', addDays(hoyISO(), -60));
-    try { const r = await sb.from('token_salud').select('token').eq('alumno', nube.user.id).maybeSingle(); if (r.data && r.data.token) lsSet('_tokenSalud', r.data.token); } catch (e) {}
-    if (error || !data) return; const S = {}; data.forEach(r => { S[r.fecha] = r; }); lsSet('_salud', JSON.stringify(S)); delete mem._salud;
+function adoptarDatosSinCuenta(uid) { // primera vez de esta cuenta en el móvil: los datos sin cuenta (o de la versión anterior) pasan a ella
+  try { const dest = 'fs:u:' + uid + ':'; if (localStorage.getItem(dest + '_init')) return;
+    const owner = localStorage.getItem('fs:_owner');
+    if (!owner || owner === uid) { const ks = []; for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && k.startsWith('fs:') && !k.startsWith('fs:u:') && !['fs:tab', 'fs:estilo', 'fs:_ultimoUid', 'fs:_owner'].includes(k)) ks.push(k); }
+      ks.forEach(k => { const c = k.slice(3); if (/^_(ts|pend):?/.test(c)) { localStorage.removeItem(k); return; } localStorage.setItem(dest + c, localStorage.getItem(k)); localStorage.removeItem(k); });
+      localStorage.removeItem('fs:_owner'); }
+    localStorage.setItem(dest + '_init', '1'); } catch (e) {}
+}
+async function bajarSalud(uid, gen) { // datos del Apple Watch que manda el Atajo (tabla salud_diaria)
+  try { const { data, error } = await sb.from('salud_diaria').select('fecha,pasos,kcal_activas,min_pie,sueno_min,vfc,fc_reposo,recibido').eq('alumno', uid).gte('fecha', addDays(hoyISO(), -60));
+    let tok = null; try { const r = await sb.from('token_salud').select('token').eq('alumno', uid).maybeSingle(); if (r.data && r.data.token) tok = r.data.token; } catch (e) {}
+    if (!nube.user || nube.user.id !== uid || nube.gen !== gen) return;
+    if (tok) lsSet('_tokenSalud', tok);
+    if (error || !data) return; const S = {}; data.forEach(r => { S[r.fecha] = r; }); lsSet('_salud', JSON.stringify(S));
     if (!st.sheet) render(); } catch (e) {}
 }
 const saludDe = (f) => { try { return (JSON.parse(lsGet('_salud') || '{}'))[f] || null; } catch (e) { return null; } };
@@ -137,19 +170,25 @@ function pintarNube() { const el = document.getElementById('nube-estado'); if (e
 function textoNube() {
   if (!sb) return 'Sin conexión con la base de datos (librería no cargada).';
   if (!nube.user) return 'Solo en este móvil. Entra con tu email para guardar en la nube.';
-  const h = nube.ultima ? nube.ultima.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }) : '—';
-  return { ok: '✓ Sincronizado · ' + h, subiendo: 'Guardando en la nube…', bajando: 'Sincronizando…', error: '⚠ Error al sincronizar: ' + esc(nube.err || '') + '. Se reintentará.', local: 'Conectando…' }[nube.estado] || '';
+  const n = pendientes().length; const h = nube.ultima ? nube.ultima.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }) : '—';
+  const conf = clavesConflicto().length ? ' · ' + clavesConflicto().length + ' conflicto(s) guardado(s)' : '';
+  return ({ ok: n ? n + ' cambio(s) pendiente(s) de subir' : '✓ Todo en la nube · ' + h, subiendo: 'Subiendo ' + n + ' cambio(s)…', bajando: 'Sincronizando…', offline: 'Sin conexión: ' + n + ' cambio(s) guardado(s) en el móvil, se subirán solos', error: '⚠ No se pudo sincronizar (' + esc(nube.err || '') + '). ' + n + ' cambio(s) a salvo en el móvil; reintento en 30 s.', local: 'Conectando…' }[nube.estado] || '') + conf;
 }
+function clavesConflicto() { const out = []; try { for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && k.startsWith(NS + '_conf:')) out.push(k.slice((NS + '_conf:').length)); } } catch (e) {} return out; }
 if (sb) {
-  sb.auth.onAuthStateChange((ev, ses) => { const u = ses ? ses.user : null; const cambio = (u && u.id) !== (nube.user && nube.user.id);
+  sb.auth.onAuthStateChange((ev, ses) => { const u = ses ? ses.user : null; const antes = nube.user && nube.user.id; const ahora = u && u.id;
     nube.user = u; if (u) nube.email = u.email;
-    if (u) { const due = lsGet('_owner'); if (due && due !== u.id) borrarLocales(); lsSet('_owner', u.id); }
-    if (cambio) { if (u) setTimeout(bajar, 0); if (typeof render === 'function' && !st.sheet) setTimeout(render, 0); } });
-  window.addEventListener('online', () => { subir(); });
+    if (antes === ahora && NS === (ahora ? 'fs:u:' + ahora + ':' : 'fs:')) return;
+    if (ahora) { adoptarDatosSinCuenta(ahora); cambiarEspacio(ahora); setTimeout(bajar, 0); }
+    else cambiarEspacio(null);
+    if (typeof render === 'function') setTimeout(() => { if (!st.sheet) render(); }, 0); });
+  window.addEventListener('online', () => { bajar(); });
+  window.addEventListener('offline', () => { nube.estado = 'offline'; pintarNube(); });
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') bajar(); });
 }
-{ let hoyAbierto = hoyISO(); // si la app sigue abierta al cambiar de día, Hoy pasa al día nuevo
-  const revisarDia = () => { const h = hoyISO(); if (h !== hoyAbierto) { if (st.fecha === hoyAbierto || st.fecha < h && hoyAbierto < INICIO) { st.fecha = h < INICIO ? INICIO : h; st.entDia = null; if (!st.sheet) render(); } hoyAbierto = h; } };
+try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) {}
+{ let hoyAbierto = hoyISO(); // si la app sigue abierta al cambiar de día, Hoy pasa al día nuevo (nunca con una hoja abierta)
+  const revisarDia = () => { const h = hoyISO(); if (h !== hoyAbierto && !st.sheet) { if (st.fecha === hoyAbierto || st.fecha < h && hoyAbierto < INICIO) { st.fecha = h < INICIO ? INICIO : h; st.entDia = null; render(); } hoyAbierto = h; } };
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') revisarDia(); });
   setInterval(revisarDia, 60000);
 }
@@ -168,6 +207,7 @@ const getDia = (fecha) => {
   const der = {};
   if (!d.tipo) d.tipo = der.tipo = base.tipo;
   if (!d.menu) d.menu = der.menu = base.menu;
+  if (d.sesion && d.sesion.dia && !d.diaEntreno) d.diaEntreno = der.diaEntreno = d.sesion.dia;
   if (!d.diaEntreno) { // días de entreno de la semana numerados 1..4, con el tipo real de cada día
     const lun = lunes(fecha); let n = 0;
     for (let i = 0; i <= idx; i++) { const ti = i === idx ? d.tipo : ((load('dia:' + addDays(lun, i), null) || {}).tipo || sem[i].tipo); if (ti === 'entreno') n++; }
@@ -204,8 +244,14 @@ const claveMio = (dia, mi) => 'menuMio:' + dia.menu + ':' + MOMENTOS[mi][0] + ':
 function lineasComida(dia, mi) { // lo que toca comer: edición del día > tu versión guardada > Jesús
   const ctxK = dia.tipo === 'sin_entreno' ? 'sin' : 'entreno'; const base = lineasJesus(dia.menu, mi, ctxK);
   const reg = dia.comidas[MOMENTOS[mi][0]] || {}; const mio = load(claveMio(dia, mi), null);
+  if (reg.estado && reg.snap) return { L: reg.snap.L.map(l => Object.assign({}, l)), resto: reg.snap.resto, base: reg.snap.base || base.L, editado: !!reg.lineas, mio: false, congelada: true };
   const L = reg.lineas || mio || base.L;
   return { L: L.map(l => Object.assign({}, l)), resto: base.resto, base: base.L, editado: !!reg.lineas, mio: !!mio };
+}
+function congelar(d, mi) { // al registrar una comida se guarda lo que había en el plato: cambiar menú o semana ya no la altera
+  const c = d.comidas[MOMENTOS[mi][0]]; if (!c) return;
+  if (c.snap) { if (c.lineas) c.snap.L = c.lineas.map(x => Object.assign({}, x)); return; }
+  const lc = lineasComida(d, mi); c.snap = { menu: d.menu, ctx: d.tipo, L: lc.L, resto: lc.resto, base: lc.base, v: 1 };
 }
 const macrosLineas = (L, resto) => { const s = sumar(L.filter(l => l.a).map(l => macA(l.a, l.g))); return { kcal: s.kcal + resto.kcal, p: s.p + resto.p, c: s.c + resto.c, g: s.g + resto.g }; };
 function equivalentes(id, g) { // misma proteína (o hidratos / grasa según el grupo)
@@ -217,7 +263,7 @@ const macrosComida = (dia, mi) => {
   if (dia.tipo === 'viaje') { const b = Object.assign({}, VIAJE[key]); if (reg.estado === 'fuera') { b.kcal = +reg.kcal || b.kcal; b.p = reg.p !== '' && reg.p != null ? +reg.p : b.p; } return b; }
   const { L, resto } = lineasComida(dia, mi);
   const m = macrosLineas(L, resto);
-  if (reg.estado === 'fuera') { return { kcal: +reg.kcal || m.kcal, p: reg.p !== '' && reg.p != null ? +reg.p : m.p, c: m.c, g: m.g }; }
+  if (reg.estado === 'fuera') { const kc = Number(reg.kcal), pr = Number(reg.p); return { kcal: reg.kcal !== '' && Number.isFinite(kc) && kc > 0 ? kc : m.kcal, p: reg.p !== '' && reg.p != null && Number.isFinite(pr) ? pr : m.p, c: m.c, g: m.g }; }
   return m;
 };
 const totalDia = (dia) => {
@@ -246,6 +292,10 @@ const habitoHecho = (dia, k) => {
 const diaPlan = (n) => PLAN.find(d => d.n === n) || PLAN[0];
 const ejKey = (d, b, e) => 'D' + d + '-' + b + '-' + e;
 /* ---------- fuerza: historial, mejor marca y 1RM estimado ---------- */
+function numOk(txt, min, max) { // '' si vacío; número finito dentro del rango o '' si no vale
+  const t = String(txt == null ? '' : txt).trim().replace(',', '.'); if (t === '') return ''; const n = Number(t);
+  return Number.isFinite(n) && n >= min && n <= max ? n : ''; }
+const fotoSrc = (x) => (typeof x === 'string' && (/^data:image\/(jpeg|png);base64,[A-Za-z0-9+/=]+$/.test(x) || /^img\/[\w\/.-]+$/.test(x))) ? x : '';
 const kgTxt = (x) => esc(String(x == null ? '' : x).replace('.', ','));
 const numKg = (x) => parseFloat(String(x == null ? '' : x).replace(',', '.'));
 const REPS_SIMPLE = /^\d+(\s*(-|a)\s*\d+)?(\s*(x|por)\s+\w+)?$/i;
@@ -377,7 +427,7 @@ function vistaComida() {
   const comidas = MOMENTOS.map(([k, n, h], mi) => {
     const reg = dia.comidas[k] || {};
     const est = reg.estado ? `<span class="pill ${reg.estado === 'fuera' ? 'warn' : 'good'}">${{ seguida: 'Seguida', cambiada: 'Cambiada', fuera: 'Fuera de plan' }[reg.estado]}</span>` : '';
-    const foto = reg.foto ? `<img class="thumb" src="${reg.foto}" alt="Tu foto">` : '';
+    const foto = fotoSrc(reg.foto) ? `<img class="thumb" src="${fotoSrc(reg.foto)}" alt="Tu foto">` : '';
     if (viaje) {
       return `<div class="card"><div class="row between"><span class="eyebrow">${n} · ${h}</span>${est}</div>
         <div class="row">${foto}<span class="small grow">${esc(REGLAS_PLATO[k])}</span></div>
@@ -409,6 +459,7 @@ function vistaComida() {
   ${comidas}
   <div class="card"><span class="eyebrow">Añadir rápido</span><div class="row wrap">${EXTRAS.map(e => `<button class="chip" data-act="extra" data-v="${e.id}">${esc(e.txt)}</button>`).join('')}</div>
     ${(dia.extras || []).length ? `<span class="small muted">Añadido hoy: ${dia.extras.map(id => esc((EXTRAS.find(e => e.id === id) || {}).txt || '')).join(', ')} · <button class="chip" data-act="extra-quitar">Quitar último</button></span>` : ''}</div>
+  <details class="card"><summary class="small"><b>Notas de Jesús sobre los menús</b></summary><div class="list small">${(DATOS.notasMenu || []).map(n => `<div>${esc(n)}</div>`).join('')}</div></details>
   <div class="tools"><button class="btn" data-act="compra">🛒 Compra</button><button class="btn" data-act="semana">Plan semana</button><button class="btn" data-act="platos">Montar platos</button><button class="btn" data-act="equiv">Equivalencias</button></div>`;
 }
 
@@ -503,13 +554,13 @@ function hojaMarcar(mi) {
   const viaje = dia.tipo === 'viaje';
   const titulo = viaje ? n + ' · viaje' : comidaPlan(dia, mi).c.nombre;
   const img = viaje ? '' : comidaPlan(dia, mi).c.img;
-  const foto = st.sheet.foto !== undefined ? st.sheet.foto : reg.foto;
+  const foto = fotoSrc(st.sheet.foto !== undefined ? st.sheet.foto : reg.foto);
   const m = macrosComida(dia, mi);
   let cuerpo = '';
   if (estado === 'cambiada' && !viaje) {
-    const { ctx } = comidaPlan(dia, mi); const adj = reg.adj || {};
-    cuerpo = `<div class="card"><span class="eyebrow">Ajusta lo que comiste · raciones de Jesús</span><div class="list">${ctx.items.map((it, i) => { const r = regla(it); const s = adj[i] || 0;
-      return `<div class="row"><span class="grow small">${esc(it)}${r ? ` <span class="muted">(paso: ${esc(r.u)})</span>` : ''}</span>${r ? `<span class="delta ${s > 0 ? 'plus' : s < 0 ? 'minus' : ''}">${s ? (s > 0 ? '+' : '−') + Math.abs(s) + ' × ' + esc(r.u) : ''}</span><span class="stepper"><button data-act="adj" data-mi="${mi}" data-i="${i}" data-v="-1" aria-label="Quitar">−</button><button data-act="adj" data-mi="${mi}" data-i="${i}" data-v="1" aria-label="Añadir">+</button></span>` : ''}</div>`; }).join('')}</div></div>`;
+    const lc = lineasComida(dia, mi);
+    cuerpo = `<div class="card"><span class="eyebrow">Lo que hay en el plato</span><div class="list small">${lc.L.filter(l => l.a).map(l => `<div class="row"><span class="grow">${esc(nombreCorto(l.a))}</span><b>${fmt(l.g)} g</b></div>`).join('')}</div>
+      <span class="tiny muted">Para cambiar alimentos o cantidades, cierra y toca cada alimento en la tarjeta de la comida. Se recalcula solo.</span></div>`;
   }
   if (estado === 'fuera') {
     cuerpo = `<div class="row"><div class="field grow"><label for="fk">Calorías aprox.</label><input id="fk" inputmode="numeric" value="${esc(reg.kcal || '')}" placeholder="${fmt(m.kcal)}"></div><div class="field grow"><label for="fp">Proteína aprox. (g)</label><input id="fp" inputmode="numeric" value="${esc(reg.p || '')}" placeholder="30"></div></div>`;
@@ -620,8 +671,7 @@ function hojaEquiv() {
 
 /* ---------- PROGRESO ---------- */
 function medidas() {
-  const base = [{ fecha: '2026-09-01', peso: 90.9, grasa: 22.1, cintura: 94, origen: 'Jesús' }, { fecha: '2026-10-01', peso: 92.1, cintura: 95, origen: 'Jesús' }];
-  return base.concat(load('medidas', [])).sort((a, b) => a.fecha < b.fecha ? -1 : 1);
+  return load('medidas', []).filter(m => m && /^\d{4}-\d{2}-\d{2}$/.test(m.fecha || '')).slice().sort((a, b) => a.fecha < b.fecha ? -1 : 1);
 }
 const METRICAS = [['peso', 'Peso', 'kg'], ['cintura', 'Cintura', 'cm'], ['grasa', '% grasa', '%'], ['musculo', 'Masa muscular', 'kg'], ['cadera', 'Cadera', 'cm'], ['pecho', 'Pecho', 'cm'], ['brazo', 'Brazo', 'cm'], ['muslo', 'Muslo', 'cm'], ['cuello', 'Cuello', 'cm']];
 const num1 = (v) => String(Math.round(v * 10) / 10).replace('.', ',');
@@ -658,7 +708,7 @@ function vistaProgreso() {
   ${grafica(M, mk, mu)}</div>
   <div class="card list">${M.slice().reverse().map(m => `<div class="row"><span class="grow small">${fechaTxt(m.fecha)} <span class="muted tiny">· ${esc(m.origen || 'tú')}</span></span><b class="small" style="text-align:right">${METRICAS.filter(([k]) => m[k] != null && m[k] !== '').map(([k, n, u]) => num1(m[k]) + ' ' + u).join(' · ')}</b></div>`).join('')}</div>
   <div class="card"><div class="row between"><span class="eyebrow">Fotos de progreso · 1 vez al mes</span><button class="chip" data-act="fotos-prog">${fotos.length ? 'Ver y comparar' : 'Empezar'}</button></div>
-    ${fotos.length ? `<div class="row" style="gap:6px">${['frente', 'perfil', 'espalda'].map(p => { const f = fotos[fotos.length - 1][p]; return f ? `<img src="${f.mini}" alt="${p}" style="width:31%;aspect-ratio:3/4;object-fit:cover;border-radius:10px">` : ''; }).join('')}</div><span class="tiny muted">Últimas: ${fechaTxt(fotos[fotos.length - 1].fecha)}</span>` : '<span class="small muted">Frente, perfil y espalda. Misma luz, misma hora y misma ropa cada mes.</span>'}</div>`;
+    ${fotos.length ? `<div class="row" style="gap:6px">${['frente', 'perfil', 'espalda'].map(p => { const f = fotos[fotos.length - 1][p]; return f ? `<img src="${fotoSrc(f.mini)}" alt="${p}" style="width:31%;aspect-ratio:3/4;object-fit:cover;border-radius:10px">` : ''; }).join('')}</div><span class="tiny muted">Últimas: ${fechaTxt(fotos[fotos.length - 1].fecha)}</span>` : '<span class="small muted">Frente, perfil y espalda. Misma luz, misma hora y misma ropa cada mes.</span>'}</div>`;
 }
 function vistaFuerza() {
   const filas = []; PLAN.forEach(d => d.bloques.forEach(b => b.ej.forEach(e => { const r = refFuerza(ejKey(d.n, b.id, e.n), e, addDays(hoyISO(), 1)); if (r) filas.push({ d, e, r }); })));
@@ -675,6 +725,8 @@ function hojaPesarme() {
   const M = medidas(); const ultDe = (k) => { for (let i = M.length - 1; i >= 0; i--) if (M[i][k] != null && M[i][k] !== '') return M[i][k]; return ''; };
   const campo = (k, n, u) => `<div class="field"><label for="m-${k}">${n} (${u})</label><input id="m-${k}" data-med="${k}" inputmode="decimal" placeholder="${ultDe(k) !== '' ? num1(ultDe(k)) : ''}"></div>`;
   return `<div class="grab"></div><h2>Medirme</h2><span class="small muted">Lunes en ayunas, después del baño. Perímetros con cinta, relajado, siempre en el mismo punto. En gris, tu última medida.</span>
+  <div class="row"><div class="field grow"><label for="m-fecha">Fecha</label><input id="m-fecha" type="date" value="${st.fecha}" max="${hoyISO()}"></div>
+    <div class="field grow"><label for="m-origen">Medido por</label><select id="m-origen"><option value="tú">Yo</option><option value="Jesús">Jesús</option></select></div></div>
   <div class="row">${campo('peso', 'Peso', 'kg')}${campo('cintura', 'Cintura', 'cm')}</div>
   <div class="card"><span class="eyebrow">Opcional</span>
     <div class="row">${campo('grasa', '% grasa', '%')}${campo('musculo', 'Masa muscular', 'kg')}</div>
@@ -688,18 +740,18 @@ function hojaFotosProg() {
   const a = st.sheet.a != null ? st.sheet.a : 0, b = st.sheet.b != null ? st.sheet.b : F.length - 1;
   const poses = ['frente', 'perfil', 'espalda'];
   return `<div class="grab"></div><h2>Fotos de progreso</h2>
-  <div class="card"><span class="eyebrow">${fechaTxt(st.fecha)}</span><div class="row" style="gap:6px">${poses.map(p => `<button class="linea" data-act="foto-prog" data-v="${p}" style="width:31%;aspect-ratio:3/4;border-radius:10px;background:var(--soft);overflow:hidden;display:flex;align-items:center;justify-content:center">${hoy[p] ? `<img src="${hoy[p].mini}" alt="${p}" style="width:100%;height:100%;object-fit:cover">` : `<span class="small">+ ${p}</span>`}</button>`).join('')}</div>
+  <div class="card"><span class="eyebrow">${fechaTxt(st.fecha)}</span><div class="row" style="gap:6px">${poses.map(p => `<button class="linea" data-act="foto-prog" data-v="${p}" style="width:31%;aspect-ratio:3/4;border-radius:10px;background:var(--soft);overflow:hidden;display:flex;align-items:center;justify-content:center">${hoy[p] ? `<img src="${fotoSrc(hoy[p].mini)}" alt="${p}" style="width:100%;height:100%;object-fit:cover">` : `<span class="small">+ ${p}</span>`}</button>`).join('')}</div>
     <span class="tiny muted">Toca cada hueco para hacer o elegir la foto. La foto original se guarda en tu nube privada.</span></div>
   ${F.length > 1 ? `<div class="card"><span class="eyebrow">Comparar</span>
     <div class="row"><div class="field grow"><label for="fa">Antes</label><select id="fa" data-comp="a">${F.map((f, i) => `<option value="${i}" ${i === a ? 'selected' : ''}>${fechaTxt(f.fecha)}</option>`).join('')}</select></div>
     <div class="field grow"><label for="fb">Después</label><select id="fb" data-comp="b">${F.map((f, i) => `<option value="${i}" ${i === b ? 'selected' : ''}>${fechaTxt(f.fecha)}</option>`).join('')}</select></div></div>
-    ${poses.map(p => (F[a][p] || F[b][p]) ? `<div class="row" style="gap:6px">${[F[a], F[b]].map(f => f[p] ? `<img src="${f[p].mini}" alt="${p} ${f.fecha}" style="width:50%;aspect-ratio:3/4;object-fit:cover;border-radius:10px">` : '<span class="grow"></span>').join('')}</div>` : '').join('')}</div>` : ''}
+    ${poses.map(p => (F[a][p] || F[b][p]) ? `<div class="row" style="gap:6px">${[F[a], F[b]].map(f => f[p] ? `<img src="${fotoSrc(f[p].mini)}" alt="${p} ${f.fecha}" style="width:50%;aspect-ratio:3/4;object-fit:cover;border-radius:10px">` : '<span class="grow"></span>').join('')}</div>` : '').join('')}</div>` : ''}
   <button class="btn block" data-act="cerrar">Cerrar</button>`;
 }
 function hojaPasos() {
   const dia = getDia(st.fecha);
   return `<div class="grab"></div><h2>Pasos de hoy</h2><span class="small muted">Míralos en la app Salud o en el Watch. Desde la fase 2 llegarán solos.</span>
-  <div class="field"><label for="ps">Pasos</label><input id="ps" inputmode="numeric" value="${dia.pasos || ''}" placeholder="12000"></div>
+  <div class="field"><label for="ps">Pasos</label><input id="ps" inputmode="numeric" value="${esc(dia.pasos || '')}" placeholder="12000"></div>
   <button class="btn primary block" data-act="guardar-pasos">Guardar</button>`;
 }
 
@@ -727,7 +779,7 @@ function vistaPlan() {
   <div class="card" id="cuenta"><span class="eyebrow">Tu cuenta y tus datos</span><span class="small" id="nube-estado">${textoNube()}</span>
     ${cuentaHtml()}
     <span class="tiny muted">Copia manual (por si acaso):</span>
-    <div class="row wrap"><button class="btn grow" data-act="exportar">Copiar copia de seguridad</button><button class="btn grow" data-act="importar">Restaurar copia</button></div></div>`;
+    <div class="row wrap"><button class="btn grow" data-act="exportar">Descargar copia</button><button class="btn grow" data-act="importar">Restaurar copia</button></div></div>`;
 }
 function relojHtml() {
   if (!sb || !nube.user) return '<span class="small muted">Primero entra en tu cuenta (más abajo).</span>';
@@ -767,9 +819,37 @@ function cuentaHtml() {
     <div class="row wrap"><button class="btn primary grow" data-act="login-entrar">Entrar</button><button class="btn grow" data-act="login-crear">Crear cuenta</button></div>
     <span class="tiny muted">La primera vez pulsa «Crear cuenta». Después, siempre «Entrar».</span>`;
 }
+const CLAVE_VALIDA = /^(dia:\d{4}-\d{2}-\d{2}|sem:\d{4}-\d{2}-\d{2}|compra:\d{4}-\d{2}-\d{2}|medidas|fotosProg|estilo|menuMio:[1-6]:(desayuno|almuerzo|cena):(entreno|sin))$/;
+function copiaActual() { const datos = {}; clavesNS().forEach(k => { if (CLAVE_VALIDA.test(k)) datos[k] = load(k, null); }); datos.estilo = load('estilo', 'sport');
+  return { formato: 'franx-copia', version: 1, creada: new Date().toISOString(), cuenta: nube.email || null, nota: 'Incluye registros y miniaturas. Las fotos originales están en tu nube (Supabase Storage), no en esta copia.', datos }; }
+function validarCopia(txt) { // todo o nada: si algo no cuadra, no se escribe nada
+  let o; try { o = JSON.parse(txt); } catch (e) { return { error: 'El texto no es una copia válida' }; }
+  let datos = {};
+  if (o && o.formato === 'franx-copia' && o.datos && typeof o.datos === 'object') datos = o.datos;
+  else if (o && typeof o === 'object') Object.entries(o).forEach(([k, v]) => { const c = k.replace(/^fs:(u:[^:]+:)?/, ''); if (CLAVE_VALIDA.test(c)) { try { datos[c] = JSON.parse(v); } catch (e) { datos[c] = undefined; } } });   // copias de la versión anterior
+  const malas = []; const ok = {};
+  Object.entries(datos).forEach(([k, v]) => {
+    if (!CLAVE_VALIDA.test(k)) { malas.push(k); return; }
+    const tipo = k.split(':')[0]; let bien = false;
+    if (tipo === 'dia') bien = esObj(v) && (!v.comidas || esObj(v.comidas)) && (!v.habitos || esObj(v.habitos));
+    else if (tipo === 'sem') bien = Array.isArray(v) && v.length === 7 && v.every(esObj);
+    else if (tipo === 'medidas' || tipo === 'fotosProg') bien = Array.isArray(v) && v.every(x => esObj(x) && /^\d{4}-\d{2}-\d{2}$/.test(x.fecha || ''));
+    else if (tipo === 'estilo') bien = v === 'sport' || v === 'clasico';
+    else if (tipo === 'menuMio') bien = v === null || (Array.isArray(v) && v.every(l => esObj(l) && (!l.a || ALI[l.a]) && (l.g == null || Number.isFinite(+l.g) && +l.g >= 0)));
+    else if (tipo === 'compra') bien = esObj(v);
+    if (bien) ok[k] = v; else malas.push(k); });
+  if (malas.length) return { error: 'Copia rechazada: ' + malas.length + ' registro(s) no válidos (' + malas.slice(0, 3).join(', ') + '…). No se ha cambiado nada' };
+  if (!Object.keys(ok).length) return { error: 'La copia está vacía' };
+  const dias = Object.keys(ok).filter(k => k.startsWith('dia:')).sort();
+  return { datos: ok, n: Object.keys(ok).length, desde: dias[0] ? dias[0].slice(4) : null, hasta: dias.length ? dias[dias.length - 1].slice(4) : null };
+}
 function hojaImportar() {
-  return `<div class="grab"></div><h2>Restaurar copia</h2><div class="field"><label for="imp">Pega aquí la copia</label><textarea id="imp"></textarea></div>
-  <button class="btn primary block" data-act="importar-ok">Restaurar</button>`;
+  const p = st.sheet.prev;
+  if (p) return `<div class="grab"></div><h2>Revisar copia</h2><div class="card"><span class="small">${p.n} registros${p.desde ? ' · días del ' + fechaTxt(p.desde) + ' al ' + fechaTxt(p.hasta) : ''}.</span>
+    <span class="small muted">Sustituirán a los que tengas en este móvil con la misma fecha y se subirán a la nube.</span></div>
+    <div class="row"><button class="btn primary grow" data-act="importar-confirmar">Restaurar</button><button class="btn grow" data-act="cerrar">Cancelar</button></div>`;
+  return `<div class="grab"></div><h2>Restaurar copia</h2><div class="field"><label for="imp">Pega aquí el texto de la copia (o abre el archivo .json y copia su contenido)</label><textarea id="imp"></textarea></div>
+  <button class="btn primary block" data-act="importar-ok">Revisar</button>`;
 }
 
 /* ---------- render ---------- */
@@ -799,11 +879,12 @@ function renderSheet() {
   else if (s.t === 'pasos') html = hojaPasos();
   else if (s.t === 'importar') html = hojaImportar();
   const prev = el.querySelector('.sheet'); const top = prev ? prev.scrollTop : 0;
+  const borrador = {}; if (prev && s.keep) prev.querySelectorAll('input[id],select[id],textarea[id]').forEach(x => { if (x.type !== 'file' && !x.dataset.buscar) borrador[x.id] = x.value; });
   el.innerHTML = `<div class="sheet-wrap" data-act="fondo"><div class="sheet" role="dialog" aria-modal="true">${html}</div></div>`;
-  if (prev && s.keep) el.querySelector('.sheet').scrollTop = top;
+  if (prev && s.keep) { const nu = el.querySelector('.sheet'); nu.scrollTop = top; Object.entries(borrador).forEach(([id, v]) => { const x = nu.querySelector('#' + CSS.escape(id)); if (x && !x.dataset.comp && !x.dataset.sem) x.value = v; }); }
   s.keep = true;
 }
-function abrir(sheet) { st.sheet = Object.assign({}, sheet); st.verMas = false; renderSheet(); }
+function abrir(sheet) { st.origen = document.activeElement; st.sheet = Object.assign({ fecha: st.fecha }, sheet); st.verMas = false; renderSheet(); const h = $('.sheet h1, .sheet h2'); if (h) { h.setAttribute('tabindex', '-1'); h.focus({ preventScroll: true }); } }
 function cerrar() { st.sheet = null; renderSheet(); render(); }
 
 /* ---------- temporizador de descanso ---------- */
@@ -859,15 +940,16 @@ $('#foto').addEventListener('change', (ev) => {
 /* ---------- acciones ---------- */
 function guardarSesionInputs() { // guarda lo escrito en los campos de series y notas antes de re-renderizar
   if (!st.sheet || st.sheet.t !== 'ej') return;
-  setDia(st.fecha, d => {
-    if (!d.sesion) return;
+  const fecha = st.sheet.fecha || st.fecha;
+  setDia(fecha, d => {
     document.querySelectorAll('.set input').forEach(inp => {
-      const m = inp.id.match(/^([pr])-(.+)-(\d+)$/); if (!m) return;
-      const key = m[2], i = +m[3]; d.sesion.series[key] = d.sesion.series[key] || [];
-      const s = d.sesion.series[key][i] = d.sesion.series[key][i] || {};
-      s[m[1] === 'p' ? 'peso' : 'reps'] = inp.value;
+      const m = inp.id.match(/^([pr])-(D(\d+)-.+)-(\d+)$/); if (!m) return;
+      const se = sesDia(d, +m[3]); if (!se) return;   // solo se guarda en la sesión de ESE día de entreno, y solo si existe
+      const key = m[2], i = +m[4]; se.series[key] = se.series[key] || [];
+      const s = se.series[key][i] = se.series[key][i] || {};
+      s[m[1] === 'p' ? 'peso' : 'reps'] = String(inp.value).slice(0, 20);
     });
-    const nota = $('[data-nota]'); if (nota) { d.sesion.notas = d.sesion.notas || {}; d.sesion.notas[nota.dataset.nota] = nota.value; }
+    const nota = $('[data-nota]'); if (nota) { const n = +(nota.dataset.nota.match(/^D(\d+)/) || [])[1]; const se = sesDia(d, n); if (se) { se.notas = se.notas || {}; se.notas[nota.dataset.nota] = String(nota.value).slice(0, 500); } }
   });
 }
 function asegurarSesion(n) { setDia(st.fecha, d => { // cada día de entreno conserva su sesión; cambiar de día no borra nada
@@ -889,9 +971,9 @@ document.addEventListener('click', (ev) => {
     case 'tipo-dia': setDia(st.fecha, d => { d.tipo = v; if (!(d.sesion && d.sesion.inicio)) delete d.diaEntreno; }); break;
     case 'menu': setDia(st.fecha, d => { d.menu = +v; }); break;
     case 'hab': setDia(st.fecha, d => { d.habitos[t.dataset.k] = !d.habitos[t.dataset.k]; }); break;
-    case 'energia': setDia(st.fecha, d => { d.energia = +v; d.habitos.s_noche = true; d.habitos.movilidad = true; }); toast('Día cerrado'); break;
+    case 'energia': setDia(st.fecha, d => { d.energia = +v; }); toast('Energía ' + v + '/5 guardada'); break;
     case 'pasos': abrir({ t: 'pasos' }); return;
-    case 'guardar-pasos': setDia(st.fecha, d => { d.pasos = parseInt($('#ps').value, 10) || 0; }); cerrar(); return;
+    case 'guardar-pasos': { const n = numOk($('#ps').value, 0, 100000); if (n === '' && $('#ps').value.trim()) { toast('Escribe un número de pasos válido'); return; } setDia(st.fecha, d => { d.pasos = n === '' ? 0 : Math.round(n); }); cerrar(); return; }
     case 'ir-entreno': st.tab = 'entreno'; break;
     case 'agenda': {
       const k = t.dataset.k;
@@ -901,7 +983,7 @@ document.addEventListener('click', (ev) => {
       else { abrir({ t: 'marcar', mi: +t.dataset.mi }); return; }
       break;
     }
-    case 'marcar-rapido': { const mi = +t.dataset.mi; const k = MOMENTOS[mi][0]; setDia(st.fecha, d => { d.comidas[k] = Object.assign(d.comidas[k] || {}, { estado: 'seguida' }); d.habitos['s_' + k] = d.habitos['s_' + k] || DATOS.suplementos.some(s => s.momento === k); }); toast(MOMENTOS[mi][1] + ' marcado'); break; }
+    case 'marcar-rapido': { const mi = +t.dataset.mi; const k = MOMENTOS[mi][0]; setDia(st.fecha, d => { d.comidas[k] = Object.assign(d.comidas[k] || {}, { estado: 'seguida' }); congelar(d, mi); }); toast(MOMENTOS[mi][1] + ' marcado'); break; }
     case 'abrir-marcar': { const mi = +t.dataset.mi; const reg = getDia(st.fecha).comidas[MOMENTOS[mi][0]] || {}; abrir({ t: 'marcar', mi, estado: reg.estado || (t.textContent.includes('Fuera') ? 'fuera' : getDia(st.fecha).tipo === 'viaje' ? 'seguida' : 'cambiada') }); return; }
     case 'foto': pedirFoto(+t.dataset.mi); return;
     case 'eq-modo': st.sheet.modo = v; renderSheet(); return;
@@ -927,23 +1009,20 @@ document.addEventListener('click', (ev) => {
         if (a === 'lin-quitar') L.splice(i, 1);
         if (a === 'lin-cambiar' && l) { l.a = t.dataset.a; l.g = +t.dataset.g; l.t = nombreCorto(l.a); }
         if (a === 'lin-add') L.push({ a: t.dataset.a, g: +t.dataset.g, t: nombreCorto(t.dataset.a) });
-        c.lineas = L; });
+        c.lineas = L; if (c.estado && c.snap) c.snap.L = L.map(x => Object.assign({}, x)); });
       if (a === 'lin-paso') break;
       if (a === 'lin-add') toast(nombreCorto(t.dataset.a) + ' añadido');
       cerrar(); return; }
     case 'lin-guardar': { const mi = +t.dataset.mi; const d = getDia(st.fecha); save(claveMio(d, mi), lineasComida(d, mi).L); toast('Guardado como tu menú ' + d.menu + ' (' + MOMENTOS[mi][1].toLowerCase() + ')'); break; }
     case 'lin-reset': { const mi = +t.dataset.mi; const k = MOMENTOS[mi][0]; const d0 = getDia(st.fecha);
-      if ((d0.comidas[k] || {}).lineas) { setDia(st.fecha, d => { delete d.comidas[k].lineas; }); toast(load(claveMio(d0, mi), null) ? 'Vuelves a tu menú guardado' : 'Menú de Jesús restaurado'); }
+      if ((d0.comidas[k] || {}).lineas) { setDia(st.fecha, d => { delete d.comidas[k].lineas; if (d.comidas[k].estado) { delete d.comidas[k].snap; congelar(d, mi); } }); toast(load(claveMio(d0, mi), null) ? 'Vuelves a tu menú guardado' : 'Menú de Jesús restaurado'); }
       else { save(claveMio(d0, mi), null); toast('Menú de Jesús restaurado'); } break; }
     case 'estado': st.sheet.estado = v; renderSheet(); return;
-    case 'adj': { const mi = +t.dataset.mi, i = +t.dataset.i, k = MOMENTOS[mi][0];
-      setDia(st.fecha, d => { const c = d.comidas[k] = d.comidas[k] || {}; c.adj = c.adj || {}; c.adj[i] = Math.max(-6, Math.min(6, (c.adj[i] || 0) + (+v))); });
-      if (st.sheet) { renderSheet(); render(); } else render(); return; }
     case 'guardar-comida': { const mi = +t.dataset.mi; const k = MOMENTOS[mi][0]; const s = st.sheet;
       if (s.fotoBlob) subirFoto(st.fecha, k, s.fotoBlob);
       setDia(st.fecha, d => { const c = d.comidas[k] = d.comidas[k] || {}; c.estado = s.estado || c.estado || 'seguida'; if (s.foto !== undefined) c.foto = s.foto;
-        c.nota = ($('#cnota') || {}).value || ''; if (c.estado === 'fuera') { c.kcal = ($('#fk') || {}).value || ''; c.p = ($('#fp') || {}).value || ''; }
-        d.habitos['s_' + k] = d.habitos['s_' + k] || DATOS.suplementos.some(x => x.momento === k); });
+        c.nota = String(($('#cnota') || {}).value || '').slice(0, 500); if (c.estado === 'fuera') { c.kcal = numOk(($('#fk') || {}).value, 0, 5000); c.p = numOk(($('#fp') || {}).value, 0, 400); }
+        congelar(d, mi); });
       toast('Guardado'); cerrar(); return; }
     case 'extra': setDia(st.fecha, d => { d.extras = (d.extras || []).concat(v); }); toast('Añadido'); break;
     case 'extra-quitar': setDia(st.fecha, d => { d.extras = (d.extras || []).slice(0, -1); }); break;
@@ -972,21 +1051,30 @@ document.addEventListener('click', (ev) => {
     case 'metodo': abrir({ t: 'metodo', k: v }); return;
     case 'ver-mas': st.verMas = true; renderSheet(); return;
     case 'pesarme': abrir({ t: 'pesarme' }); return;
-    case 'guardar-peso': { const m = { fecha: st.fecha, origen: 'tú' }; let n = 0;
-      document.querySelectorAll('[data-med]').forEach(inp => { const x = parseFloat((inp.value || '').replace(',', '.')); if (x > 0) { m[inp.dataset.med] = x; n++; } });
+    case 'guardar-peso': { const fecha = ($('#m-fecha') || {}).value || st.fecha; if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha) || fecha > hoyISO()) { toast('Fecha no válida'); return; }
+      const RANGOS = { peso: [30, 250], cintura: [40, 200], grasa: [3, 60], musculo: [10, 120], cadera: [40, 200], pecho: [40, 200], brazo: [15, 70], muslo: [25, 100], cuello: [20, 70] };
+      const m = { fecha, origen: ($('#m-origen') || {}).value === 'Jesús' ? 'Jesús' : 'tú' }; let n = 0, mal = '';
+      document.querySelectorAll('[data-med]').forEach(inp => { if (!String(inp.value).trim()) return; const [lo, hi] = RANGOS[inp.dataset.med] || [0, 1000]; const x = numOk(inp.value, lo, hi); if (x === '') mal = inp.dataset.med; else { m[inp.dataset.med] = x; n++; } });
+      if (mal) { toast('Revisa el valor de ' + mal); return; }
       if (!n) { toast('Escribe al menos una medida'); return; }
-      const L = load('medidas', []); const prev = L.find(x => x.fecha === st.fecha);
-      const L2 = L.filter(x => x.fecha !== st.fecha); L2.push(Object.assign({}, prev || {}, m)); save('medidas', L2); toast('Medidas guardadas'); cerrar(); return; }
+      const L = load('medidas', []); const prev = L.find(x => x.fecha === fecha);
+      const L2 = L.filter(x => x.fecha !== fecha); L2.push(Object.assign({}, prev || {}, m)); save('medidas', L2); toast('Medidas guardadas'); cerrar(); return; }
     case 'prog-modo': st.progModo = v; break;
     case 'metrica': st.metrica = v; break;
     case 'fotos-prog': abrir({ t: 'fotosprog' }); return;
     case 'foto-prog': fotoModo = v; pedirFoto(null); return;
-    case 'exportar': { const dump = {}; try { for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k.startsWith('fs:')) dump[k] = localStorage.getItem(k); } } catch (e) {}
-      const txt = JSON.stringify(dump);
-      (navigator.clipboard ? navigator.clipboard.writeText(txt) : Promise.reject()).then(() => toast('Copia copiada al portapapeles'), () => { abrir({ t: 'importar' }); setTimeout(() => { const ta = $('#imp'); if (ta) { ta.value = txt; ta.select(); } toast('Copia el texto seleccionado'); }, 50); });
+    case 'exportar': { const txt = JSON.stringify(copiaActual());
+      try { const a2 = document.createElement('a'); a2.href = URL.createObjectURL(new Blob([txt], { type: 'application/json' })); a2.download = 'franx-copia-' + hoyISO() + '.json'; document.body.appendChild(a2); a2.click(); setTimeout(() => { URL.revokeObjectURL(a2.href); a2.remove(); }, 1000); } catch (e) {}
+      (navigator.clipboard ? navigator.clipboard.writeText(txt) : Promise.reject()).then(() => toast('Copia descargada y copiada al portapapeles'), () => toast('Copia descargada'));
       return; }
     case 'importar': abrir({ t: 'importar' }); return;
-    case 'importar-ok': try { const o = JSON.parse($('#imp').value); if (!o || typeof o !== 'object') throw 0; Object.keys(mem).forEach(k => delete mem[k]); Object.entries(o).forEach(([k, val]) => { localStorage.setItem(k, val); const kk = k.slice(3); if (k.startsWith('fs:') && sincroniza(kk)) { marcarTs(kk, Date.now()); pendiente(kk); } }); toast('Copia restaurada'); cerrar(); } catch (e) { toast('El texto no es una copia válida'); } return;
+    case 'importar-ok': { const r = validarCopia($('#imp').value); if (r.error) { toast(r.error); return; } st.sheet.prev = r; st.sheet.txt = $('#imp').value; renderSheet(); return; }
+    case 'importar-confirmar': { const r = st.sheet.prev; if (!r) return; const antes = {};
+      try { Object.keys(r.datos).forEach(k => { antes[k] = lsGet(k); });
+        Object.entries(r.datos).forEach(([k, v]) => { if (!lsSet(k, JSON.stringify(v))) throw new Error('memoria'); delete mem[k]; });
+      } catch (e) { Object.entries(antes).forEach(([k, v]) => { if (v == null) lsDel(k); else lsSet(k, v); delete mem[k]; }); toast('No se pudo restaurar (memoria llena). No se ha cambiado nada'); return; }
+      Object.keys(r.datos).forEach(k => { lsSet('_op:' + k, String(opDe(k) + 1)); pendiente(k); });
+      aplicarEstilo(load('estilo', 'sport')); toast('Copia restaurada: ' + Object.keys(r.datos).length + ' registros'); cerrar(); return; }
     case 'cerrar': guardarSesionInputs(); cerrar(); return;
     case 'ir-cuenta': st.tab = 'plan'; st.sheet = null; render(); setTimeout(() => { const c = document.getElementById('cuenta'); if (c) c.scrollIntoView({ behavior: 'smooth' }); }, 30); return;
     case 'login-entrar': case 'login-crear': {
@@ -1002,10 +1090,13 @@ document.addEventListener('click', (ev) => {
       return; }
     case 'sync': bajar(); return;
     case 'estilo': aplicarEstilo(v); save('estilo', v); break;
-    case 'logout': subir().finally(() => sb.auth.signOut().then(() => { nube.user = null; borrarLocales(); toast('Sesión cerrada. Tus datos siguen en la nube'); render(); })); return;
+    case 'logout': { let n = 0; const fin = () => { n = pendientes().length; return sb.auth.signOut({ scope: 'local' }).then(({ error }) => { if (error) { toast('No se pudo cerrar sesión: ' + error.message); return; }
+        toast(n ? 'Sesión cerrada. ' + n + ' cambio(s) sin subir quedan guardados en este móvil y se subirán al volver a entrar' : 'Sesión cerrada. Tus datos están en la nube'); render(); }); };
+      (navigator.onLine ? subir() : Promise.resolve()).finally(fin); return; }
   }
   render();
 });
+document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape' && st.sheet) { guardarSesionInputs(); cerrar(); } });
 document.addEventListener('input', (ev) => {
   const t = ev.target; if (t.dataset.buscar && st.sheet) { st.sheet.q = t.value; const pos = t.selectionStart; renderSheet(); const n = $('#buscar'); if (n) { n.focus(); try { n.setSelectionRange(pos, pos); } catch (e) {} } }
 });
@@ -1014,7 +1105,10 @@ document.addEventListener('change', (ev) => {
   if (t.dataset.comp && st.sheet) { st.sheet[t.dataset.comp] = +t.value; renderSheet(); return; }
   if (t.dataset.sem) { const lun = lunes(st.fecha); const sem = getSemana(st.fecha).slice(); const i = +t.dataset.i;
     sem[i] = Object.assign({}, sem[i], { [t.dataset.sem]: t.dataset.sem === 'menu' ? +t.value : t.value }); save('sem:' + lun, sem);
-    const f = addDays(lun, i); const d = load('dia:' + f, null); if (d) { delete d[t.dataset.sem]; delete d.diaEntreno; save('dia:' + f, d); }
+    const f = addDays(lun, i); const d = load('dia:' + f, null);
+    if (d) { const registrado = (d.sesion && d.sesion.inicio) || Object.values(d.comidas || {}).some(c => c && c.estado);
+      if (registrado) toast('Ese día ya tiene registros: no se cambia lo ya comido ni el entreno hecho');
+      const d2 = Object.assign({}, d); delete d2[t.dataset.sem]; if (!(d.sesion && d.sesion.inicio)) delete d2.diaEntreno; save('dia:' + f, d2); }
     renderSheet(); render(); }
   if (t.dataset.nota || (t.id && /^[pr]-/.test(t.id))) guardarSesionInputs();
 });

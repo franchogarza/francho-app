@@ -206,10 +206,11 @@ window.__errs=[];
 window.addEventListener('error',function(e){var t=e.target;if(t&&t.tagName==='SCRIPT'){window.__errs.push('No carga '+(t.src||'').split('/').pop());}else{window.__errs.push((e.message||'error')+' @ '+String(e.filename||'').split('/').pop()+':'+(e.lineno||''));}},true);
 setTimeout(function(){var m=document.getElementById('main');if(m&&!m.innerHTML.trim()){m.innerHTML='<div style="padding:16px;font:14px/1.4 sans-serif"><b>La app no ha arrancado.</b> Haz captura de esto y mándasela a Claude:<pre style="white-space:pre-wrap;font-size:12px">'+(window.__errs.join('\n')||'sin errores')+'\nPLAN:'+typeof window.PLAN+' supabase:'+typeof window.supabase+'\n'+navigator.userAgent+'</pre></div>';}},3000);
 </script>
-<script src="supabase.js?v=7"></script>
-<script src="data.js?v=7"></script>
-<script src="alimentos.js?v=7"></script>
-<script src="app.js?v=7"></script>
+<script src="supabase.js?v=8"></script>
+<script src="data.js?v=8"></script>
+<script src="alimentos.js?v=8"></script>
+<script src="app.js?v=8"></script>
+<script>if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(function () {});</script>
 
 </body>
 </html>

@@ -1,0 +1,90 @@
+import os; exec(open(os.path.join(os.path.dirname(os.path.abspath(__file__)),'esc.py')).read())
+def login(pg,em='f@x.com'):
+    act(pg,'[data-tab=plan]')
+    if pg.locator('#em').count()==0: act(pg,'[data-act=ir-cuenta]')
+    pg.fill('#em',em); pg.fill('#pw','secreto1'); act(pg,'[data-act=login-crear]'); pg.wait_for_timeout(1800)
+def a1_conflictos(p,b):
+    DB.clear(); cA,A=nuevo(p,b,'2026-10-12T09:00:00'); login(A)
+    act(A,'[data-tab=hoy]'); act(A,'[data-act=hab][data-k=sentadillas]'); A.wait_for_timeout(1800)
+    cB,B=nuevo(p,b,'2026-10-12T09:01:00'); login(B); B.wait_for_timeout(800)
+    # A sin conexión cambia tipo de día; B (online) marca energía 4 → ambos sobre la misma revisión
+    A.evaluate("window.__offline=true"); act(A,'[data-act=tipo-dia][data-v=viaje]'); A.wait_for_timeout(1500)
+    B.evaluate("document.dispatchEvent(new Event('visibilitychange'))"); B.wait_for_timeout(800)
+    B.evaluate("window.dispatchEvent(new Event('x'))")
+    act(B,'[data-tab=hoy]'); B.locator('[data-act=energia][data-v="4"]').count() or None
+    B.evaluate("1"); 
+    # B: hábito movilidad
+    B.evaluate("""(()=>{const b=document.querySelector('[data-act=hab][data-k=movilidad]'); if(b) b.click(); })()""")
+    act(B,'[data-act=pasos]') if B.locator('[data-act=pasos]').count() else None
+    if B.locator('#ps').count(): B.fill('#ps','5000'); act(B,'[data-act=guardar-pasos]')
+    B.wait_for_timeout(2000)
+    A.evaluate("window.__offline=false; window.dispatchEvent(new Event('online'))"); A.wait_for_timeout(3000)
+    srv=DB[('u-f@x.com','dia:2026-10-12')]['valor']; print('servidor',{k:srv.get(k) for k in ['tipo','pasos','habitos']})
+    check(srv.get('tipo')=='viaje' and srv.get('pasos')==5000,'Cambios de dos móviles sobre el mismo día se fusionan (ninguno se pierde)')
+    check(srv.get('habitos',{}).get('sentadillas'),'El cambio anterior se conserva')
+    check(not A.errs and not B.errs,'Sin errores conflictos '+str((A.errs+B.errs)[:2]))
+    cA.close(); cB.close()
+def a2_logout_offline(p,b):
+    DB.clear(); c,pg=nuevo(p,b,'2026-10-12T09:00:00'); login(pg)
+    pg.evaluate("window.__offline=true"); act(pg,'[data-tab=hoy]'); act(pg,'[data-act=tipo-dia][data-v=viaje]'); pg.wait_for_timeout(1500)
+    act(pg,'[data-tab=plan]'); act(pg,'[data-act=logout]'); pg.wait_for_timeout(800)
+    check('fs:u:u-f@x.com:dia:2026-10-12' in pg.evaluate("Object.keys(localStorage)"),'Cerrar sesión sin conexión conserva los cambios en el móvil')
+    pg.evaluate("window.__offline=false"); login(pg); pg.wait_for_timeout(1500)
+    act(pg,'[data-act=login-entrar]') if pg.locator('[data-act=login-entrar]').count() else None
+    pg.wait_for_timeout(1500)
+    srv=DB.get(('u-f@x.com','dia:2026-10-12'),{}).get('valor',{})
+    check(srv.get('tipo')=='viaje','Al volver a entrar se suben los cambios pendientes')
+    c.close()
+def a3_cuentas(p,b):
+    DB.clear(); c,pg=nuevo(p,b,'2026-10-12T09:00:00'); login(pg,'a@x.com')
+    act(pg,'[data-tab=hoy]'); act(pg,'[data-act=tipo-dia][data-v=viaje]'); pg.wait_for_timeout(1800)
+    act(pg,'[data-tab=plan]'); act(pg,'[data-act=logout]'); pg.wait_for_timeout(600); login(pg,'b@x.com'); pg.wait_for_timeout(1500)
+    act(pg,'[data-tab=hoy]'); t=pg.inner_text('#main')
+    check(not any(k[0]=='u-b@x.com' for k in DB),'La cuenta B no recibe datos de A')
+    check(pg.locator('[data-act=tipo-dia][data-v=viaje][aria-pressed=true]').count()==0,'La cuenta B no ve el día de A')
+    c.close()
+def a4_cuota(p,b):
+    DB.clear(); c,pg=nuevo(p,b,'2026-10-12T09:00:00'); login(pg)
+    pg.evaluate("(()=>{const o=Storage.prototype.setItem; Storage.prototype.setItem=function(k,v){ if(window.__q && k.includes('dia:')) throw new Error('QuotaExceededError'); return o.call(this,k,v); }; window.__q=true; return 1})()")
+    act(pg,'[data-tab=hoy]'); act(pg,'[data-act=tipo-dia][data-v=viaje]'); pg.wait_for_timeout(2500)
+    srv=DB.get(('u-f@x.com','dia:2026-10-12'),{}).get('valor',{})
+    check(srv.get('tipo')=='viaje','Con memoria llena se sube el valor NUEVO, no el anterior')
+    c.close()
+def a5_copia(p,b):
+    DB.clear(); c,pg=nuevo(p,b,'2026-10-12T09:00:00'); login(pg)
+    act(pg,'[data-tab=hoy]'); act(pg,'[data-act=tipo-dia][data-v=viaje]'); pg.wait_for_timeout(1500)
+    copia=pg.evaluate("JSON.stringify({formato:'franx-copia',version:1,datos:{'dia:2026-10-13':{tipo:'viaje',comidas:{},habitos:{}}, 'medidas':[{fecha:'2026-09-01',peso:90.9,origen:'Jesús'}]}})")
+    act(pg,'[data-tab=plan]'); act(pg,'[data-act=importar]'); pg.fill('#imp',copia); act(pg,'[data-act=importar-ok]'); act(pg,'[data-act=importar-confirmar]'); pg.wait_for_timeout(2500)
+    check(DB.get(('u-f@x.com','dia:2026-10-13')) and DB.get(('u-f@x.com','medidas')),'Restaurar copia sube sus registros a la nube')
+    mala=pg.evaluate("JSON.stringify({formato:'franx-copia',version:1,datos:{'dia:2026-10-14':{tipo:'x'},'_pend':[],'otra':1}})")
+    act(pg,'[data-act=importar]'); pg.fill('#imp',mala); act(pg,'[data-act=importar-ok]')
+    check(pg.locator('[data-act=importar-confirmar]').count()==0 and ls(pg,'dia:2026-10-14') is None,'Copia con claves no válidas se rechaza entera')
+    xss=pg.evaluate("""JSON.stringify({formato:'franx-copia',version:1,datos:{'dia:2026-10-15':{comidas:{desayuno:{estado:'seguida',foto:'x" onerror="window.__pwn=1'}},habitos:{}}}})""")
+    pg.keyboard.press('Escape'); pg.wait_for_timeout(200)
+    act(pg,'[data-act=importar]'); pg.fill('#imp',xss); act(pg,'[data-act=importar-ok]'); act(pg,'[data-act=importar-confirmar]')
+    pg.clock.set_fixed_time('2026-10-15T09:00:00'); pg.reload(); pg.wait_for_timeout(600); act(pg,'[data-tab=comida]'); pg.wait_for_timeout(300)
+    check(not pg.evaluate("window.__pwn") and 'onerror' not in pg.inner_html('#main'),'Una foto maliciosa en una copia no ejecuta código')
+    c.close()
+def a6_comida(p,b):
+    c,pg=nuevo(p,b,'2026-10-12T09:00:00'); act(pg,'[data-tab=comida]')
+    act(pg,'[data-act=abrir-marcar]'); act(pg,'[data-act=guardar-comida]')
+    t0=pg.inner_text('.macros'); act(pg,'[data-act=menu][data-v="2"]'); t1=pg.inner_text('.macros'); print(t0.split()[0],t1.split()[0])
+    check(t0.split()[0]==t1.split()[0],'Cambiar de menú no altera una comida ya registrada')
+    d=ls(pg,'dia:2026-10-12'); check(not d.get('habitos',{}).get('s_desayuno'),'Registrar comida no marca suplementos')
+    act(pg,'[data-tab=hoy]')
+    c.close()
+def a7_borradores(p,b):
+    c,pg=nuevo(p,b,'2026-10-12T18:00:00'); act(pg,'[data-tab=entreno]'); act(pg,'[data-act=cardio]')
+    pg.fill('#vat','150'); pg.fill('#dist','1200'); act(pg,'[data-act=cardio-sens][data-v="3"]')
+    check(pg.input_value('#vat')=='150' and pg.input_value('#dist')=='1200','Elegir sensación no borra vatios ni distancia')
+    pg.keyboard.press('Escape'); pg.wait_for_timeout(200); check(pg.locator('.sheet').count()==0,'Escape cierra la hoja')
+    act(pg,'[data-tab=comida]'); act(pg,'[data-act=abrir-marcar]'); act(pg,'[data-act=estado][data-v=fuera]')
+    pg.fill('#fk','abc'); pg.fill('#fp','-50'); act(pg,'[data-act=guardar-comida]')
+    t=pg.inner_text('.macros'); check('NaN' not in t and '-' not in t.split('\n')[0],'Valores no numéricos o negativos no rompen los totales')
+    act(pg,'[data-act=pasos]') if pg.locator('[data-act=pasos]').count() else None
+    c.close()
+with sync_playwright() as p:
+    b=p.chromium.launch()
+    for n,f in [('conflictos',a1_conflictos),('logout offline',a2_logout_offline),('cuentas',a3_cuentas),('cuota',a4_cuota),('copias',a5_copia),('comida',a6_comida),('borradores',a7_borradores)]: run(n,f,p,b)
+    b.close()
+print('\nRESUMEN', len(oks),'OK', len(fails),'FALLOS'); [print(' -',f) for f in fails]

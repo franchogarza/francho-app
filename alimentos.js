@@ -89,7 +89,7 @@ window.MAPA_MENU = {
   '1¾ tazas de cuscús cocido': [['cuscus', 280]], '1⅓ tazas de cuscús cocido': [['cuscus', 213]],
   '4 lonchas finas de jamón serrano': [['jamon', 48]],
   '1 puñado de nueces en el yogur': [['nueces', 25]], '1 puñado pequeño de nueces en el yogur': [['nueces', 20]],
-  '1 puñado de nueces': [['nueces', 25]], '1 puñado pequeño de nueces': [['nueces', 20]],
+  '1 puñado de nueces': [['nueces', 25]], '1 puñado pequeño de nueces': [['nueces', 20]], '½ puñado generoso de nueces': [['nueces', 15]], '1 puñado pequeño de nueces': [['nueces', 20]],
   '2 palmas de gambas peladas': [['gambas', 240]],
   '1 tarrina individual grande de queso fresco ligero': [['quesofresco', 125]]
 };

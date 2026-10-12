@@ -113,9 +113,10 @@ def s7_copia(p,b):
     act(pg,'[data-act=hab]')
     dump=pg.evaluate("(()=>{const o={};for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);if(k.startsWith('fs:'))o[k]=localStorage.getItem(k);}return JSON.stringify(o)})()")
     pg.evaluate("localStorage.clear()"); pg.reload(); pg.wait_for_timeout(400)
-    act(pg,'[data-tab=plan]'); act(pg,'[data-act=importar]'); pg.fill('#imp',dump); act(pg,'[data-act=importar-ok]')
-    check(ls(pg,'dia:2026-10-12') is not None,'Restaurar copia recupera los datos')
+    act(pg,'[data-tab=plan]'); act(pg,'[data-act=importar]'); pg.fill('#imp',dump); act(pg,'[data-act=importar-ok]'); act(pg,'[data-act=importar-confirmar]')
+    check(ls(pg,'dia:2026-10-12') is not None,'Restaurar copia (formato antiguo) recupera los datos')
     act(pg,'[data-act=importar]'); pg.fill('#imp','basura'); act(pg,'[data-act=importar-ok]')
+    check(pg.locator('[data-act=importar-confirmar]').count()==0,'Copia inválida se rechaza sin tocar nada')
     check(not pg.errs,'Copia inválida no rompe: '+str(pg.errs[:2]))
     ctx.close()
 with sync_playwright() as p:
